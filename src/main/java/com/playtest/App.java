@@ -98,10 +98,11 @@ public final class App {
             Path job = Files.createTempDirectory("match-");
             Path a = job.resolve("player.dck"), b = job.resolve("ai.dck");
             Files.writeString(a, m.playerDeck); Files.writeString(b, m.aiDeck);
+            String workerCp = System.getenv().getOrDefault("WORKER_CP", "/app/server.jar:/app/forge/forge-headless.jar:/app/lib/*");
             List<String> cmd = List.of(Path.of(System.getProperty("java.home"), "bin", "java").toString(),
                 "-Xmx" + System.getenv().getOrDefault("WORKER_HEAP", "1200m"), "-Djava.awt.headless=true", "-Duser.home=" + job,
                 "--add-opens=java.base/java.lang=ALL-UNNAMED", "--add-opens=java.base/java.util=ALL-UNNAMED",
-                "-cp", System.getProperty("java.class.path"), MatchWorker.class.getName(), a.toString(), b.toString(), m.format);
+                "-cp", workerCp, MatchWorker.class.getName(), a.toString(), b.toString(), m.format);
             m.worker = new ProcessBuilder(cmd).redirectError(ProcessBuilder.Redirect.INHERIT).start();
             broadcast(m, "{\"type\":\"STATUS\",\"message\":\"Forge is loading cards (about 30-60s)\"}");
             Thread relay = new Thread(() -> {
