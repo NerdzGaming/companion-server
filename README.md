@@ -24,3 +24,10 @@ socket messages).
    `MAX_MATCHES` (default 1).
 
 Licence: Forge is GPL-3.0; its licence ships in the image as FORGE-LICENSE.
+
+## Phase 2: your seat is now human-controlled
+The website seat ("player") uses `HumanBridgeController`. The worker emits `PROMPT` lines
+(`PRIORITY`, `MULLIGAN`, `ATTACK`, `BLOCK`) and the browser answers with
+`{"type":"ACT","promptId":..., ...}`: `index` (or null to pass), `keep`, `attackers:[cardId]`,
+`blocks:[{blocker,attacker}]`. Targets, mana payment and other choices are still picked by Forge AI.
+Unanswered prompts fall back to the AI after `PROMPT_TIMEOUT_MIN` (default 5) minutes.

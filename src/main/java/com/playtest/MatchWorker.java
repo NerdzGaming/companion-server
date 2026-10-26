@@ -2,6 +2,7 @@ package com.playtest;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import forge.GuiDesktop;
+import forge.ai.LobbyPlayerAi;
 import forge.deck.Deck;
 import forge.deck.io.DeckSerializer;
 import forge.game.Game;
@@ -26,7 +27,7 @@ import java.util.Map;
 
 /**
  * One JVM per match. Runs a real Forge game and prints a JSON STATE line whenever the
- * visible state changes. Seat 1 ("player") is AI-controlled until human prompts are wired.
+ * visible state changes. Seat 1 ("player") is the website user via HumanBridgeController.
  */
 public final class MatchWorker {
     static final ObjectMapper JSON = new ObjectMapper();
@@ -39,6 +40,7 @@ public final class MatchWorker {
         String assets = Path.of(System.getenv().getOrDefault("FORGE_ASSETS", ".")).toAbsolutePath() + "/";
         GuiBase.setInterface(new GuiDesktop() { @Override public String getAssetsDir() { return assets; } });
         FModel.initialize(null, null);
+        HumanBridgeController.startInbox();
 
         Deck a = DeckSerializer.fromFile(Path.of(args[0]).toFile());
         Deck b = DeckSerializer.fromFile(Path.of(args[1]).toFile());
@@ -47,7 +49,7 @@ public final class MatchWorker {
         GameRules rules = new GameRules(type);
         rules.setAppliedVariants(EnumSet.of(type));
         RegisteredPlayer pa = (type == GameType.Commander ? RegisteredPlayer.forCommander(a) : new RegisteredPlayer(a))
-            .setPlayer(GamePlayerUtil.createAiPlayer("player", 0, ""));
+            .setPlayer(websiteSeat());
         RegisteredPlayer pb = (type == GameType.Commander ? RegisteredPlayer.forCommander(b) : new RegisteredPlayer(b))
             .setPlayer(GamePlayerUtil.createAiPlayer("opponent", 1, ""));
         Match match = new Match(rules, List.of(pa, pb), "Nerdz rules match");
@@ -78,6 +80,17 @@ public final class MatchWorker {
         over.put("winner", draw ? null : game.getOutcome().getWinningLobbyPlayer().getName());
         emit(over);
         System.exit(0);
+    }
+
+    /** Lobby player whose in-game controller asks the website for decisions. */
+    static LobbyPlayerAi websiteSeat() {
+        return new LobbyPlayerAi("player", null) {
+            @Override public Player createIngamePlayer(Game game, final int id) {
+                Player p = new Player(getName(), game, id);
+                p.setFirstController(new HumanBridgeController(game, p, this));
+                return p;
+            }
+        };
     }
 
     static Map<String, Object> snapshot(Game game) {

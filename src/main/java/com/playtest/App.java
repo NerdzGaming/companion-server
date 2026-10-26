@@ -28,7 +28,7 @@ public final class App {
     static final class MatchSession {
         final String id; final String playerDeck; final String aiDeck; final String format;
         final Set<WsContext> sockets = ConcurrentHashMap.newKeySet();
-        volatile Process worker; volatile String lastState; final long created = System.currentTimeMillis();
+        volatile Process worker; volatile String lastState; volatile String lastPrompt; final long created = System.currentTimeMillis();
         MatchSession(String id, String p, String a, String f) { this.id = id; playerDeck = p; aiDeck = a; format = f; }
     }
     static final Map<String, MatchSession> MATCHES = new ConcurrentHashMap<>();
@@ -59,15 +59,23 @@ public final class App {
                 ctx.session.setIdleTimeout(java.time.Duration.ofMinutes(15));
                 m.sockets.add(ctx);
                 if (m.lastState != null) ctx.send(m.lastState);
+                if (m.lastPrompt != null) ctx.send(m.lastPrompt); // resend pending decision after reconnect
                 synchronized (m) { if (m.worker == null) start(m); }
             });
             ws.onMessage(ctx -> {
                 JsonNode msg = JSON.readTree(ctx.message());
                 String type = msg.path("type").asText("");
                 if (type.equals("PING")) { ctx.send("{\"type\":\"PONG\"}"); return; }
-                // Interactive human decisions are the next milestone; acknowledge so the UI isn't left hanging.
-                ctx.send(JSON.writeValueAsString(Map.of("type", "ACK", "action", type,
-                    "note", "Human controls are not wired yet; Forge AI is playing your seat.")));
+                MatchSession m = MATCHES.get(ctx.pathParam("id"));
+                if (!type.equals("ACT") || m == null || m.worker == null || !m.worker.isAlive()) {
+                    ctx.send("{\"type\":\"ERROR\",\"message\":\"Unknown action or match not running\"}"); return;
+                }
+                // Forward the decision to the Forge worker (one JSON line on its stdin).
+                synchronized (m) {
+                    var in = m.worker.getOutputStream();
+                    in.write((JSON.writeValueAsString(msg) + "\n").getBytes(StandardCharsets.UTF_8));
+                    in.flush();
+                }
             });
             ws.onClose(ctx -> {
                 MatchSession m = MATCHES.get(ctx.pathParam("id"));
@@ -111,6 +119,7 @@ public final class App {
                     while ((line = r.readLine()) != null) {
                         if (!line.startsWith("{")) continue; // skip Forge's own log noise
                         if (line.contains("\"type\":\"STATE\"")) m.lastState = line;
+                        if (line.contains("\"type\":\"PROMPT\"")) m.lastPrompt = line;
                         broadcast(m, line);
                     }
                 } catch (Exception ignored) { }
