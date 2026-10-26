@@ -19,6 +19,7 @@ RUN useradd --create-home --uid 10001 forge
 WORKDIR /app
 COPY --from=build /server/target/companion-server-0.2.0.jar ./server.jar
 COPY --from=build /server/target/lib ./lib
+COPY --from=build /upstream/forge-gui-desktop/target/forge-gui-desktop-2.0.16-SNAPSHOT-jar-with-dependencies.jar ./forge/forge-headless.jar
 COPY --from=build /upstream/forge-gui/res ./res
 COPY --from=build /upstream/LICENSE ./FORGE-LICENSE
 COPY fixtures ./fixtures
