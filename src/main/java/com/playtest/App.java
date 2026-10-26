@@ -28,7 +28,7 @@ public final class App {
     static final class MatchSession {
         final String id; final String playerDeck; final String aiDeck; final String format;
         final Set<WsContext> sockets = ConcurrentHashMap.newKeySet();
-        volatile Process worker; volatile String lastState; volatile String lastPrompt; final long created = System.currentTimeMillis();
+        volatile Process worker; volatile long emptySince; volatile String lastState; volatile String lastPrompt; final long created = System.currentTimeMillis();
         MatchSession(String id, String p, String a, String f) { this.id = id; playerDeck = p; aiDeck = a; format = f; }
     }
     static final Map<String, MatchSession> MATCHES = new ConcurrentHashMap<>();
@@ -67,6 +67,7 @@ public final class App {
                 String type = msg.path("type").asText("");
                 if (type.equals("PING")) { ctx.send("{\"type\":\"PONG\"}"); return; }
                 MatchSession m = MATCHES.get(ctx.pathParam("id"));
+                if (type.equals("LEAVE")) { if (m != null) end(m); ctx.closeSession(); return; }
                 if (!type.equals("ACT") || m == null || m.worker == null || !m.worker.isAlive()) {
                     ctx.send("{\"type\":\"ERROR\",\"message\":\"Unknown action or match not running\"}"); return;
                 }
@@ -80,6 +81,7 @@ public final class App {
             ws.onClose(ctx -> {
                 MatchSession m = MATCHES.get(ctx.pathParam("id"));
                 if (m != null) m.sockets.remove(ctx);
+                if (m != null && m.sockets.isEmpty()) m.emptySince = System.currentTimeMillis();
             });
         });
 
@@ -87,9 +89,10 @@ public final class App {
         Thread reaper = new Thread(() -> {
             while (true) {
                 try { Thread.sleep(60_000); } catch (InterruptedException e) { return; }
-                long cutoff = System.currentTimeMillis() - 15 * 60_000;
+                long now = System.currentTimeMillis();
                 MATCHES.values().removeIf(m -> {
-                    boolean dead = m.sockets.isEmpty() && m.created < cutoff;
+                    // Two minutes covers a reconnect; unconnected sessions expire after 15.
+                    boolean dead = m.sockets.isEmpty() && (m.emptySince > 0 ? now - m.emptySince > 120_000 : now - m.created > 15 * 60_000);
                     if (dead && m.worker != null) m.worker.destroyForcibly();
                     return dead;
                 });
@@ -99,7 +102,15 @@ public final class App {
         app.start(port);
     }
 
+    static void end(MatchSession m) {
+        MATCHES.remove(m.id);
+        Process w = m.worker;
+        if (w != null && w.isAlive()) { w.descendants().forEach(ProcessHandle::destroyForcibly); w.destroyForcibly(); }
+    }
+
     static void start(MatchSession m) {
+        // Reclaim slots held by matches nobody is connected to before refusing a new one.
+        MATCHES.values().stream().filter(x -> x != m && x.sockets.isEmpty() && x.worker != null).toList().forEach(App::end);
         long running = MATCHES.values().stream().filter(x -> x.worker != null && x.worker.isAlive()).count();
         if (running >= MAX_MATCHES) { broadcast(m, "{\"type\":\"ERROR\",\"message\":\"Server busy, try again shortly\"}"); return; }
         try {
