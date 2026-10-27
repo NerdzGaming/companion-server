@@ -34,7 +34,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Website seat. Asks the browser (via stdout PROMPT lines / stdin ACT lines) for priority,
- * mulligan, attack, block, targets, modes, yes/no and card/player choices. Mana payment and
+ * mulligan, attack, block, targets, modes, yes/no and card/player choices and which mana sources to tap. Other
  * rarely used choices still fall back to Forge AI. No answer within the timeout = AI decides.
  */
 public final class HumanBridgeController extends PlayerControllerAi {
@@ -240,12 +240,14 @@ public final class HumanBridgeController extends PlayerControllerAi {
     private void humanTargets(SpellAbility root) {
         for (SpellAbility cur = root; cur != null; cur = cur.getSubAbility()) {
             if (!cur.usesTargeting()) continue;
+            if (cur.getActivatingPlayer() == null) cur.setActivatingPlayer(getPlayer());
             List<GameEntity> cand;
-            try { cand = new ArrayList<>(cur.getTargetRestrictions().getAllCandidates(cur)); } catch (RuntimeException e) { cand = new ArrayList<>(); }
+            try { cand = new ArrayList<>(cur.getTargetRestrictions().getAllCandidates(cur)); }
+            catch (RuntimeException e) { cand = new ArrayList<>(); MatchWorker.emit(Map.of("type", "NOTICE", "message", "Could not list targets for " + src(cur) + ": " + e)); }
             int min = cur.getMinTargets(), max = Math.max(cur.getMaxTargets(), 1);
             if (cand.isEmpty()) { cur.resetTargets(); super.chooseTargetsFor(cur); continue; }
             List<GameEntity> chosen;
-            if (cand.size() <= min) chosen = cand; // no real choice
+            if (cand.size() == 1 && min >= 1) chosen = cand; // only one legal target
             else {
                 String what = cur.getTargetRestrictions().getVTSelection();
                 chosen = pick("TARGET", what == null || what.isBlank() ? "Choose target" + (max > 1 ? "s" : "") : what, cur, cand, min, Math.min(max, cand.size()));
@@ -259,8 +261,46 @@ public final class HumanBridgeController extends PlayerControllerAi {
     @Override
     public boolean playChosenSpellAbility(SpellAbility sa) {
         if (sa.isLandAbility()) { if (sa.canPlay()) sa.resolve(); return true; }
-        ComputerUtil.handlePlayingSpellAbility(getPlayer(), sa, this::humanTargets);
+        ComputerUtil.handlePlayingSpellAbility(getPlayer(), sa, root -> { humanTargets(root); humanMana(root); });
         return true;
+    }
+
+    /** Lets the player pick which mana sources to tap; Forge only pays whatever is still missing. */
+    private void humanMana(SpellAbility sa) {
+        if (!sa.isTargetNumberValid()) return;
+        forge.card.mana.ManaCost cost;
+        try { cost = sa.getPayCosts() == null ? null : sa.getPayCosts().getTotalMana(); } catch (RuntimeException e) { cost = null; }
+        if (cost == null || cost.isZero()) return;
+        Player me = getPlayer();
+        List<SpellAbility> sources = new ArrayList<>();
+        for (Card c : new ArrayList<>(me.getCardsIn(ZoneType.Battlefield))) {
+            if (c == sa.getHostCard()) continue;
+            for (SpellAbility ma : c.getManaAbilities()) {
+                try { ma.setActivatingPlayer(me); if (ma.canPlay()) sources.add(ma); } catch (RuntimeException ignored) { }
+            }
+        }
+        if (sources.isEmpty()) return;
+        List<Map<String, Object>> opts = new ArrayList<>();
+        for (int i = 0; i < sources.size(); i++) {
+            SpellAbility ma = sources.get(i);
+            Map<String, Object> m = new LinkedHashMap<>(entity(ma.getHostCard()));
+            m.put("key", "m" + i);
+            String d = ma.getDescription();
+            boolean multi = ma.getHostCard().getManaAbilities().size() > 1;
+            m.put("label", ma.getHostCard().getName() + (multi && d != null && !d.isBlank() ? " — " + d : ""));
+            opts.add(m);
+        }
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("source", src(sa)); body.put("cost", cost.toString()); body.put("options", opts);
+        JsonNode a = ask("MANA", body);
+        if (a == null || a.path("auto").asBoolean(false)) return; // Forge auto-taps
+        Set<String> chosen = keys(a);
+        Set<Card> used = new HashSet<>();
+        for (int i = 0; i < sources.size(); i++) {
+            SpellAbility ma = sources.get(i);
+            if (!chosen.contains("m" + i) || used.contains(ma.getHostCard())) continue;
+            try { if (ma.canPlay()) { ComputerUtil.playNoStack(me, ma, me.getGame(), false); used.add(ma.getHostCard()); } } catch (RuntimeException ignored) { }
+        }
     }
 
     @Override
