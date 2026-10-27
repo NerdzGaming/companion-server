@@ -158,6 +158,24 @@ public final class HumanBridgeController extends PlayerControllerAi {
         return a.path("keep").asBoolean(true);
     }
 
+    /** London mulligan: the website player chooses which cards go to the bottom. */
+    @Override
+    public CardCollectionView tuckCardsViaMulligan(CardCollectionView hand, int cardsToReturn) {
+        if (cardsToReturn <= 0) return new CardCollection();
+        List<Map<String, Object>> cards = new ArrayList<>();
+        for (Card c : hand) cards.add(card(c));
+        JsonNode a = ask("BOTTOM", Map.of("hand", cards, "count", cardsToReturn));
+        if (a == null) return super.tuckCardsViaMulligan(hand, cardsToReturn);
+        CardCollection out = new CardCollection();
+        Set<Integer> seen = new HashSet<>();
+        for (JsonNode id : a.path("cards")) {
+            if (out.size() >= cardsToReturn || !seen.add(id.asInt())) continue;
+            for (Card c : hand) if (c.getId() == id.asInt()) { out.add(c); break; }
+        }
+        if (out.size() != cardsToReturn) return super.tuckCardsViaMulligan(hand, cardsToReturn);
+        return out;
+    }
+
     @Override
     public void declareAttackers(Player attacker, Combat combat) {
         GameEntity defender = null;

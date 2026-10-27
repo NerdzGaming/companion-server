@@ -1,4 +1,7 @@
-# Forge Companion Server v0.7
+# Forge Companion Server v0.8
+
+v0.8: London mulligan (always draw seven, then you pick cards for the bottom via a BOTTOM prompt answered with {cards:[ids]}).
+
 
 Drop-in source update for NerdzGaming/companion-server. Upload the contents of this
 folder to the repository root, not a nested companion-server folder.

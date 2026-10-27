@@ -42,6 +42,8 @@ public final class MatchWorker {
         GuiBase.setInterface(new GuiDesktop() { @Override public String getAssetsDir() { return assets; } });
         FModel.initialize(null, null);
         HumanBridgeController.startInbox();
+        // Forge's preference may default to Vancouver (draw one fewer); tabletop play uses the London mulligan.
+        forge.StaticData.instance().setMulliganRule(forge.MulliganDefs.MulliganRule.London);
 
         Deck a = DeckSerializer.fromFile(Path.of(args[0]).toFile());
         Deck b = DeckSerializer.fromFile(Path.of(args[1]).toFile());
