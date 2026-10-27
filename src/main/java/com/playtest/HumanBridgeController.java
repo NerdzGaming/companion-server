@@ -6,6 +6,15 @@ import forge.ai.PlayerControllerAi;
 import forge.game.Game;
 import forge.game.GameEntity;
 import forge.game.card.Card;
+import forge.game.card.CardCollection;
+import forge.game.card.CardCollectionView;
+import forge.ai.ComputerUtil;
+import forge.game.player.DelayedReveal;
+import forge.game.player.PlayerActionConfirmMode;
+import forge.game.spellability.AbilitySub;
+import forge.util.collect.FCollectionView;
+import java.util.HashSet;
+import java.util.Set;
 import forge.game.combat.Combat;
 import forge.game.combat.CombatUtil;
 import forge.game.player.Player;
@@ -25,8 +34,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Website seat. Asks the browser (via stdout PROMPT lines / stdin ACT lines) for priority,
- * mulligan, attack and block decisions. Everything else (targets, payment, modal choices)
- * still falls back to Forge AI so the game never stalls. No answer within the timeout = AI decides.
+ * mulligan, attack, block, targets, modes, yes/no and card/player choices. Mana payment and
+ * rarely used choices still fall back to Forge AI. No answer within the timeout = AI decides.
  */
 public final class HumanBridgeController extends PlayerControllerAi {
     static final long TIMEOUT_MIN = Long.parseLong(System.getenv().getOrDefault("PROMPT_TIMEOUT_MIN", "5"));
@@ -116,8 +125,13 @@ public final class HumanBridgeController extends PlayerControllerAi {
             if (idx < 0 || idx >= playable.size()) return null;
             SpellAbility sa = playable.get(idx);
             if (!sa.isLandAbility() && sa.usesTargeting()) {
-                try { getAi().canPlaySa(sa); } catch (RuntimeException ignored) { }
-                if (!sa.isTargetNumberValid()) {
+                boolean ok;
+                try { ok = sa.getTargetRestrictions().getAllCandidates(sa).size() >= Math.max(1, sa.getMinTargets()); } catch (RuntimeException e) { ok = false; }
+                if (!ok) { // spell targets (counterspells) are not listed as candidates; let Forge confirm legality
+                    try { getAi().canPlaySa(sa); } catch (RuntimeException ignored) { }
+                    ok = sa.isTargetNumberValid();
+                }
+                if (!ok) {
                     MatchWorker.emit(Map.of("type", "NOTICE", "message", "No legal targets found for " + sa.getHostCard().getName() + "."));
                     continue;
                 }
@@ -171,5 +185,147 @@ public final class HumanBridgeController extends PlayerControllerAi {
             for (Card c : attackers) if (c.getId() == b.path("attacker").asInt()) atk = c;
             if (blk != null && atk != null && CombatUtil.canBlock(atk, blk, combat)) combat.addBlocker(atk, blk);
         }
+    }
+
+    // ---------- shared choice helpers ----------
+
+    private String key(Object o) {
+        if (o instanceof Card c) return "c" + c.getId();
+        if (o instanceof Player p) return "p" + p.getId();
+        return "x" + System.identityHashCode(o);
+    }
+
+    private Map<String, Object> entity(Object o) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("key", key(o));
+        if (o instanceof Card c) {
+            m.put("kind", "card"); m.put("cardId", c.getId()); m.put("label", c.getName());
+            m.put("controller", c.getController() == getPlayer() ? "you" : "opponent");
+            m.put("zone", c.getZone() == null ? null : c.getZone().getZoneType().name());
+            if (c.isCreature()) { m.put("power", c.getNetPower()); m.put("toughness", c.getNetToughness()); }
+        } else if (o instanceof Player p) {
+            m.put("kind", "player"); m.put("label", p == getPlayer() ? "You" : p.getName());
+        } else {
+            m.put("kind", "other"); m.put("label", String.valueOf(o));
+        }
+        return m;
+    }
+
+    private static String src(SpellAbility sa) {
+        return sa == null || sa.getHostCard() == null ? "" : sa.getHostCard().getName();
+    }
+
+    private static Set<String> keys(JsonNode a) {
+        Set<String> out = new HashSet<>();
+        for (JsonNode k : a.path("keys")) out.add(k.asText());
+        return out;
+    }
+
+    /** Asks the player to pick between min and max of the options; null = no valid answer (caller falls back to AI). */
+    private <T> List<T> pick(String kind, String title, SpellAbility sa, List<T> options, int min, int max) {
+        List<Map<String, Object>> opts = new ArrayList<>();
+        for (T o : options) opts.add(entity(o));
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("title", title == null ? "" : title); body.put("source", src(sa));
+        body.put("min", min); body.put("max", max); body.put("options", opts);
+        JsonNode a = ask(kind, body);
+        if (a == null) return null;
+        Set<String> chosen = keys(a);
+        List<T> out = new ArrayList<>();
+        for (T o : options) if (chosen.contains(key(o)) && out.size() < max) out.add(o);
+        return out.size() >= min ? out : null;
+    }
+
+    /** Lets the player choose targets for each targeted part of the spell or ability. */
+    private void humanTargets(SpellAbility root) {
+        for (SpellAbility cur = root; cur != null; cur = cur.getSubAbility()) {
+            if (!cur.usesTargeting()) continue;
+            List<GameEntity> cand;
+            try { cand = new ArrayList<>(cur.getTargetRestrictions().getAllCandidates(cur)); } catch (RuntimeException e) { cand = new ArrayList<>(); }
+            int min = cur.getMinTargets(), max = Math.max(cur.getMaxTargets(), 1);
+            if (cand.isEmpty()) { cur.resetTargets(); super.chooseTargetsFor(cur); continue; }
+            List<GameEntity> chosen;
+            if (cand.size() <= min) chosen = cand; // no real choice
+            else {
+                String what = cur.getTargetRestrictions().getVTSelection();
+                chosen = pick("TARGET", what == null || what.isBlank() ? "Choose target" + (max > 1 ? "s" : "") : what, cur, cand, min, Math.min(max, cand.size()));
+            }
+            cur.resetTargets();
+            if (chosen == null) { super.chooseTargetsFor(cur); continue; }
+            for (GameEntity e : chosen) cur.getTargets().add(e);
+        }
+    }
+
+    @Override
+    public boolean playChosenSpellAbility(SpellAbility sa) {
+        if (sa.isLandAbility()) { if (sa.canPlay()) sa.resolve(); return true; }
+        ComputerUtil.handlePlayingSpellAbility(getPlayer(), sa, this::humanTargets);
+        return true;
+    }
+
+    @Override
+    public boolean chooseTargetsFor(SpellAbility currentAbility) {
+        if (!currentAbility.usesTargeting()) return super.chooseTargetsFor(currentAbility);
+        humanTargets(currentAbility);
+        return currentAbility.isTargetNumberValid() || super.chooseTargetsFor(currentAbility);
+    }
+
+    @Override
+    public List<AbilitySub> chooseModeForAbility(SpellAbility sa, List<AbilitySub> possible, int min, int num, boolean allowRepeat) {
+        if (possible.size() <= min && !allowRepeat) return new ArrayList<>(possible);
+        List<Map<String, Object>> opts = new ArrayList<>();
+        for (int i = 0; i < possible.size(); i++) {
+            String d = possible.get(i).getDescription();
+            opts.add(Map.of("index", i, "label", d == null || d.isBlank() ? "Mode " + (i + 1) : d));
+        }
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("source", src(sa)); body.put("min", min); body.put("max", num); body.put("options", opts);
+        JsonNode a = ask("MODE", body);
+        if (a != null) {
+            List<AbilitySub> out = new ArrayList<>();
+            for (JsonNode i : a.path("indices")) {
+                int ix = i.asInt(-1);
+                if (ix >= 0 && ix < possible.size() && (allowRepeat || !out.contains(possible.get(ix)))) out.add(possible.get(ix));
+            }
+            if (out.size() >= min && out.size() <= num) return out;
+        }
+        return super.chooseModeForAbility(sa, possible, min, num, allowRepeat);
+    }
+
+    @Override
+    public boolean confirmAction(SpellAbility sa, PlayerActionConfirmMode mode, String message, List<String> options, Card cardToShow, Map<String, Object> params) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("source", src(sa)); body.put("message", message == null || message.isBlank() ? "Do you want to do this?" : message);
+        JsonNode a = ask("CONFIRM", body);
+        if (a == null) return super.confirmAction(sa, mode, message, options, cardToShow, params);
+        return a.path("yes").asBoolean(false);
+    }
+
+    @Override
+    public <T extends GameEntity> T chooseSingleEntityForEffect(FCollectionView<T> optionList, DelayedReveal delayedReveal, SpellAbility sa, String title, boolean isOptional, Player targetedPlayer, Map<String, Object> params) {
+        List<T> list = new ArrayList<>(optionList);
+        if (list.isEmpty()) return null;
+        if (list.size() == 1 && !isOptional) return list.get(0);
+        List<T> got = pick("CHOOSE", title, sa, list, isOptional ? 0 : 1, 1);
+        if (got == null) return super.chooseSingleEntityForEffect(optionList, delayedReveal, sa, title, isOptional, targetedPlayer, params);
+        return got.isEmpty() ? null : got.get(0);
+    }
+
+    @Override
+    public <T extends GameEntity> List<T> chooseEntitiesForEffect(FCollectionView<T> optionList, int min, int max, DelayedReveal delayedReveal, SpellAbility sa, String title, Player targetedPlayer, Map<String, Object> params) {
+        List<T> list = new ArrayList<>(optionList);
+        if (list.size() <= min) return list;
+        List<T> got = pick("CHOOSE", title, sa, list, min, Math.min(max, list.size()));
+        return got != null ? got : super.chooseEntitiesForEffect(optionList, min, max, delayedReveal, sa, title, targetedPlayer, params);
+    }
+
+    @Override
+    public CardCollectionView chooseCardsForEffect(CardCollectionView sourceList, SpellAbility sa, String title, int min, int max, boolean isOptional, Map<String, Object> params) {
+        List<Card> list = new ArrayList<>();
+        for (Card c : sourceList) list.add(c);
+        int lo = isOptional ? 0 : Math.min(min, list.size());
+        if (list.size() <= lo) return new CardCollection(list);
+        List<Card> got = pick("CHOOSE", title, sa, list, lo, Math.min(max, list.size()));
+        return got != null ? new CardCollection(got) : super.chooseCardsForEffect(sourceList, sa, title, min, max, isOptional, params);
     }
 }

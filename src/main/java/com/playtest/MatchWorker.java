@@ -123,6 +123,7 @@ public final class MatchWorker {
     static List<Map<String, Object>> cards(Player p, ZoneType zone, boolean withState) {
         List<Map<String, Object>> list = new ArrayList<>();
         for (Card c : new ArrayList<>(p.getCardsIn(zone))) {
+            if (c.isImmutable()) continue; // engine-only effect cards (e.g. commander effect)
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("id", c.getId());
             m.put("name", c.getName());
