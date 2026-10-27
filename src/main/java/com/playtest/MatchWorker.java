@@ -32,6 +32,7 @@ import java.util.Map;
 public final class MatchWorker {
     static final ObjectMapper JSON = new ObjectMapper();
     static PrintStream out;
+    static PublicActionLog actionLog;
 
     public static void main(String[] args) throws Exception {
         out = new PrintStream(new java.io.FileOutputStream(java.io.FileDescriptor.out), true, StandardCharsets.UTF_8);
@@ -55,21 +56,11 @@ public final class MatchWorker {
         Match match = new Match(rules, List.of(pa, pb), "Nerdz rules match");
         Game game = match.createGame();
         game.setNoGUIUser();
+        actionLog = new PublicActionLog(game);
+        game.subscribeToEvents(actionLog);
         emit(Map.of("type", "STATUS", "message", "Game started"));
 
-        // Snapshot the board every 400ms from a side thread; only send when something changed.
-        Thread watcher = new Thread(() -> {
-            String last = "";
-            while (!game.isGameOver()) {
-                try {
-                    String snap = JSON.writeValueAsString(snapshot(game));
-                    if (!snap.equals(last)) { out.println(snap); last = snap; }
-                    Thread.sleep(400);
-                } catch (InterruptedException e) { return; } catch (Exception ignored) { /* board changed mid-read */ }
-            }
-        });
-        watcher.setDaemon(true); watcher.start();
-
+        // Snapshots are produced on the game thread by public events and before prompts.
         match.startGame(game);
         Thread.sleep(500);
         try { out.println(JSON.writeValueAsString(snapshot(game))); } catch (Exception ignored) { }
@@ -104,6 +95,7 @@ public final class MatchWorker {
         for (Player p : players) {
             Map<String, Object> side = new LinkedHashMap<>();
             side.put("life", p.getLife());
+            side.put("manaPool", manaPool(p));
             side.put("handCount", p.getCardsIn(ZoneType.Hand).size());
             side.put("libraryCount", p.getCardsIn(ZoneType.Library).size());
             side.put("battlefield", cards(p, ZoneType.Battlefield, true));
@@ -115,8 +107,9 @@ public final class MatchWorker {
             s.put(p.getName(), side);
         }
         List<String> stack = new ArrayList<>();
-        game.getStack().forEach(si -> stack.add(si.getStackDescription()));
+        game.getStack().forEach(si -> stack.add(visibleName(si.getSpellAbility().getHostCard())));
         s.put("stack", stack);
+        s.put("actionLog", actionLog == null ? List.of() : actionLog.snapshot());
         return s;
     }
 
@@ -126,11 +119,30 @@ public final class MatchWorker {
             if (c.isImmutable()) continue; // engine-only effect cards (e.g. commander effect)
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("id", c.getId());
-            m.put("name", c.getName());
+            m.put("name", visibleName(c));
             if (withState) { m.put("tapped", c.isTapped()); if (c.isCreature()) { m.put("power", c.getNetPower()); m.put("toughness", c.getNetToughness()); } }
             list.add(m);
         }
         return list;
+    }
+
+    static void recordManaAction(forge.game.spellability.SpellAbility sa) {
+        if (actionLog != null) actionLog.manaAction(visibleName(sa.getHostCard()));
+    }
+
+    static String visibleName(Card c) { return c.isFaceDown() ? "Face-down card" : c.getName(); }
+
+    /** Display only; leave individual mana objects, restrictions and provenance in Forge. */
+    static List<Map<String, Object>> manaPool(Player p) {
+        byte[] colors = { forge.card.MagicColor.WHITE, forge.card.MagicColor.BLUE,
+            forge.card.MagicColor.BLACK, forge.card.MagicColor.RED, forge.card.MagicColor.GREEN, forge.card.MagicColor.COLORLESS };
+        String[] labels = { "W", "U", "B", "R", "G", "C" };
+        List<Map<String, Object>> pool = new ArrayList<>();
+        for (int i = 0; i < colors.length; i++) {
+            int n = p.getManaPool().getAmountOfColor(colors[i]);
+            if (n > 0) pool.add(Map.of("color", labels[i], "amount", n));
+        }
+        return pool;
     }
 
     static void emit(Object o) { try { out.println(JSON.writeValueAsString(o)); } catch (Exception ignored) { } }

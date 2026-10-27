@@ -5,6 +5,15 @@ import forge.ai.ComputerUtilMana;
 import forge.ai.PlayerControllerAi;
 import forge.game.Game;
 import forge.game.GameEntity;
+import forge.game.GameObject;
+import forge.game.GameActionUtil;
+import forge.game.ability.AbilityUtils;
+import forge.game.ability.ApiType;
+import forge.game.ability.effects.CharmEffect;
+import forge.game.cost.CostPayment;
+import forge.ai.AiCostDecision;
+import forge.game.zone.Zone;
+import forge.game.spellability.SpellAbilityStackInstance;
 import forge.game.card.Card;
 import forge.game.card.CardCollection;
 import forge.game.card.CardCollectionView;
@@ -94,14 +103,15 @@ public final class HumanBridgeController extends PlayerControllerAi {
                 for (Card c : new ArrayList<>(me.getCardsIn(z))) {
                     try {
                         for (SpellAbility sa : c.getAllPossibleAbilities(me, true)) {
-                            if (sa.isManaAbility()) continue;
+                            sa.setActivatingPlayer(me);
+                            if (!sa.canPlay()) continue;
                             if (!sa.isLandAbility() && !ComputerUtilMana.canPayManaCost(sa, me, 0, false)) continue;
                             playable.add(sa);
                         }
                     } catch (RuntimeException ignored) { }
                 }
             }
-            if (playable.isEmpty()) return null; // nothing to do: auto-pass
+            // Always offer an explicit pass: do not advance the phase and drain floating mana silently.
             List<Map<String, Object>> options = new ArrayList<>();
             for (int i = 0; i < playable.size(); i++) {
                 SpellAbility sa = playable.get(i);
@@ -111,6 +121,7 @@ public final class HumanBridgeController extends PlayerControllerAi {
                 o.put("cardName", sa.getHostCard().getName());
                 o.put("zone", sa.getHostCard().getZone() == null ? null : sa.getHostCard().getZone().getZoneType().name());
                 o.put("land", sa.isLandAbility());
+                o.put("mana", sa.isManaAbility());
                 String d = sa.isLandAbility() ? "Play land" : sa.toUnsuppressedString();
                 o.put("label", d == null || d.isBlank() ? sa.getHostCard().getName() : d);
                 options.add(o);
@@ -124,18 +135,14 @@ public final class HumanBridgeController extends PlayerControllerAi {
             int idx = a.path("index").asInt(-1);
             if (idx < 0 || idx >= playable.size()) return null;
             SpellAbility sa = playable.get(idx);
-            if (!sa.isLandAbility() && sa.usesTargeting()) {
-                boolean ok;
-                try { ok = sa.getTargetRestrictions().getAllCandidates(sa).size() >= Math.max(1, sa.getMinTargets()); } catch (RuntimeException e) { ok = false; }
-                if (!ok) { // spell targets (counterspells) are not listed as candidates; let Forge confirm legality
-                    try { getAi().canPlaySa(sa); } catch (RuntimeException ignored) { }
-                    ok = sa.isTargetNumberValid();
-                }
-                if (!ok) {
-                    MatchWorker.emit(Map.of("type", "NOTICE", "message", "No legal targets found for " + sa.getHostCard().getName() + "."));
-                    continue;
-                }
+            sa.setActivatingPlayer(me);
+            if (!sa.canPlay()) continue;
+            if (sa.isManaAbility()) {
+                if (ComputerUtil.playNoStack(me, sa, me.getGame(), false)) MatchWorker.recordManaAction(sa);
+                else MatchWorker.emit(Map.of("type", "NOTICE", "message", "Mana ability could not be activated."));
+                continue; // mana abilities do not use the stack; keep priority
             }
+            // Do not call getAi().canPlaySa here: it is a strategic decision, not a legality check.
             List<SpellAbility> out = new ArrayList<>();
             out.add(sa);
             return out;
@@ -190,6 +197,7 @@ public final class HumanBridgeController extends PlayerControllerAi {
     // ---------- shared choice helpers ----------
 
     private String key(Object o) {
+        if (o instanceof SpellAbility) return "s" + System.identityHashCode(o);
         if (o instanceof Card c) return "c" + c.getId();
         if (o instanceof Player p) return "p" + p.getId();
         return "x" + System.identityHashCode(o);
@@ -203,6 +211,9 @@ public final class HumanBridgeController extends PlayerControllerAi {
             m.put("controller", c.getController() == getPlayer() ? "you" : "opponent");
             m.put("zone", c.getZone() == null ? null : c.getZone().getZoneType().name());
             if (c.isCreature()) { m.put("power", c.getNetPower()); m.put("toughness", c.getNetToughness()); }
+        } else if (o instanceof SpellAbility ability) {
+            m.put("kind", "other"); m.put("zone", "Stack");
+            m.put("label", MatchWorker.visibleName(ability.getHostCard()) + " — " + (ability.getHostCard().isFaceDown() ? "Face-down spell" : ability.toUnsuppressedString()));
         } else if (o instanceof Player p) {
             m.put("kind", "player"); m.put("label", p == getPlayer() ? "You" : p.getName());
         } else {
@@ -228,41 +239,117 @@ public final class HumanBridgeController extends PlayerControllerAi {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("title", title == null ? "" : title); body.put("source", src(sa));
         body.put("min", min); body.put("max", max); body.put("options", opts);
-        JsonNode a = ask(kind, body);
-        if (a == null) return null;
-        Set<String> chosen = keys(a);
-        List<T> out = new ArrayList<>();
-        for (T o : options) if (chosen.contains(key(o)) && out.size() < max) out.add(o);
-        return out.size() >= min ? out : null;
+        while (true) {
+            JsonNode a = ask(kind, body);
+            if (a == null) return null; // explicit timeout is the only fallback
+            Set<String> chosen = keys(a);
+            List<T> out = new ArrayList<>();
+            for (T o : options) if (chosen.contains(key(o))) out.add(o);
+            if (out.size() >= min && out.size() <= max && out.size() == chosen.size()) return out;
+            MatchWorker.emit(Map.of("type", "NOTICE", "message", "That selection is not valid. Please choose again."));
+        }
     }
 
-    /** Lets the player choose targets for each targeted part of the spell or ability. */
-    private void humanTargets(SpellAbility root) {
+    /** Includes stack abilities, which TargetRestrictions.getAllCandidates does not return. */
+    private List<GameObject> targetCandidates(SpellAbility sa) {
+        List<GameObject> result = new ArrayList<>(sa.getTargetRestrictions().getAllCandidates(sa));
+        for (SpellAbilityStackInstance item : getPlayer().getGame().getStack()) {
+            SpellAbility target = item.getSpellAbility();
+            if (target != sa.getRootAbility() && sa.canTarget(target)) result.add(target);
+        }
+        return result;
+    }
+
+    /** Recompute legality after each target, respecting dependent/unique-target restrictions. */
+    private boolean humanTargets(SpellAbility root) {
+        root.setActivatingPlayer(getPlayer());
         for (SpellAbility cur = root; cur != null; cur = cur.getSubAbility()) {
             if (!cur.usesTargeting()) continue;
-            if (cur.getActivatingPlayer() == null) cur.setActivatingPlayer(getPlayer());
-            List<GameEntity> cand;
-            try { cand = new ArrayList<>(cur.getTargetRestrictions().getAllCandidates(cur)); }
-            catch (RuntimeException e) { cand = new ArrayList<>(); MatchWorker.emit(Map.of("type", "NOTICE", "message", "Could not list targets for " + src(cur) + ": " + e)); }
-            int min = cur.getMinTargets(), max = Math.max(cur.getMaxTargets(), 1);
-            if (cand.isEmpty()) { cur.resetTargets(); super.chooseTargetsFor(cur); continue; }
-            List<GameEntity> chosen;
-            if (cand.size() == 1 && min >= 1) chosen = cand; // only one legal target
-            else {
-                String what = cur.getTargetRestrictions().getVTSelection();
-                chosen = pick("TARGET", what == null || what.isBlank() ? "Choose target" + (max > 1 ? "s" : "") : what, cur, cand, min, Math.min(max, cand.size()));
+            if (cur.isDividedAsYouChoose()) {
+                MatchWorker.emit(Map.of("type", "NOTICE", "message", "Divided target allocation is not supported by this bridge yet; this action was not cast."));
+                return false;
+            }
+            Player targeting = cur.getTargetingPlayer();
+            if (targeting != null && targeting != getPlayer()) {
+                if (!targeting.getController().chooseTargetsFor(cur)) return false;
+                continue;
             }
             cur.resetTargets();
-            if (chosen == null) { super.chooseTargetsFor(cur); continue; }
-            for (GameEntity e : chosen) cur.getTargets().add(e);
+            int min = cur.getMinTargets(), max = cur.getMaxTargets();
+            int count = 0;
+            while (count < max) {
+                List<GameObject> cand;
+                try { cand = targetCandidates(cur); }
+                catch (RuntimeException e) {
+                    MatchWorker.emit(Map.of("type", "NOTICE", "message", "Could not list targets for " + src(cur) + ". The action was not auto-targeted."));
+                    return false;
+                }
+                if (cand.isEmpty()) break;
+                int required = count < min ? 1 : 0;
+                String what = cur.getTargetRestrictions().getVTSelection();
+                List<GameObject> chosen = pick("TARGET",
+                    (what == null || what.isBlank() ? "Choose target" : what) + (max > 1 ? " (" + count + "/" + max + ")" : ""),
+                    cur, cand, required, 1);
+                if (chosen == null) { // only the explicit timeout path permits the AI fallback
+                    cur.resetTargets();
+                    if (!super.chooseTargetsFor(cur)) return false;
+                    count = cur.getTargets().size();
+                    break;
+                }
+                if (chosen.isEmpty()) break;
+                GameObject target = chosen.get(0);
+                if (!cur.canTarget(target) || !cur.getTargets().add(target)) continue;
+                count++;
+            }
+            if (!cur.isTargetNumberValid()) {
+                MatchWorker.emit(Map.of("type", "NOTICE", "message", "Not enough legal targets for " + src(cur) + "."));
+                return false;
+            }
         }
+        return root.isTargetNumberValid();
     }
 
     @Override
     public boolean playChosenSpellAbility(SpellAbility sa) {
-        if (sa.isLandAbility()) { if (sa.canPlay()) sa.resolve(); return true; }
-        ComputerUtil.handlePlayingSpellAbility(getPlayer(), sa, root -> { humanTargets(root); humanMana(root); });
-        return true;
+        sa.setActivatingPlayer(getPlayer());
+        if (sa.isLandAbility()) { if (!sa.canPlay()) return false; sa.resolve(); return true; }
+        return castWithHumanChoices(sa);
+    }
+
+    /** Adapted from pinned ComputerUtil.handlePlayingSpellAbility with a boolean choice boundary.
+     * Rollback BEFORE payment on invalid targets; never fake a successful cast. */
+    private boolean castWithHumanChoices(SpellAbility sa) {
+        Player me = getPlayer();
+        Game game = me.getGame();
+        Card source = sa.getHostCard();
+        Zone original = source.isCopiedSpell() ? null : source.getZone();
+        int position = original == null ? 0 : original.getCards().indexOf(source);
+        source.setSplitStateToPlayAbility(sa);
+        if (sa.isSpell() && !source.isCopiedSpell()) {
+            sa = AbilityUtils.addSpliceEffects(sa);
+            sa.setHostCard(game.getAction().moveToStack(source, sa));
+        }
+        sa.setActivatingPlayer(me);
+        if (!sa.isCopied()) { sa.resetPaidHash(); sa.setPaidLife(0); }
+        sa = GameActionUtil.addExtraKeywordCost(sa);
+        CostPayment payment = new CostPayment(sa.getPayCosts(), sa);
+        if ((sa.getApi() == ApiType.Charm && !CharmEffect.makeChoices(sa)) || !humanTargets(sa)) {
+            if (sa.isSpell()) GameActionUtil.rollbackAbility(sa, original, position, payment, source);
+            return false;
+        }
+        humanMana(sa);
+        boolean refreeze = game.getStack().isFrozen();
+        game.getStack().freezeStack(sa);
+        if (payment.payComputerCosts(new AiCostDecision(me, sa, false))) {
+            game.getStack().addAndUnfreeze(sa);
+            if (sa.getSplicedCards() != null && !sa.getSplicedCards().isEmpty())
+                game.getAction().reveal(sa.getSplicedCards(), me, true, "Reveals spliced cards from ");
+            return true;
+        }
+        if (!refreeze) game.getStack().unfreezeStack();
+        if (sa.isSpell()) GameActionUtil.rollbackAbility(sa, original, position, payment, source);
+        MatchWorker.emit(Map.of("type", "NOTICE", "message", "The action could not be paid. Previously activated mana sources remain activated."));
+        return false;
     }
 
     /** Lets the player pick which mana sources to tap; Forge only pays whatever is still missing. */
@@ -292,22 +379,27 @@ public final class HumanBridgeController extends PlayerControllerAi {
         }
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("source", src(sa)); body.put("cost", cost.toString()); body.put("options", opts);
+        body.put("pool", MatchWorker.manaPool(me));
         JsonNode a = ask("MANA", body);
         if (a == null || a.path("auto").asBoolean(false)) return; // Forge auto-taps
-        Set<String> chosen = keys(a);
-        Set<Card> used = new HashSet<>();
-        for (int i = 0; i < sources.size(); i++) {
-            SpellAbility ma = sources.get(i);
-            if (!chosen.contains("m" + i) || used.contains(ma.getHostCard())) continue;
-            try { if (ma.canPlay()) { ComputerUtil.playNoStack(me, ma, me.getGame(), false); used.add(ma.getHostCard()); } } catch (RuntimeException ignored) { }
+        for (JsonNode selected : a.path("keys")) {
+            String value = selected.asText();
+            for (int i = 0; i < sources.size(); i++) {
+                if (!value.equals("m" + i)) continue;
+                SpellAbility ma = sources.get(i);
+                try {
+                    if (ma.canPlay() && ComputerUtil.playNoStack(me, ma, me.getGame(), false)) MatchWorker.recordManaAction(ma);
+                } catch (RuntimeException ignored) {
+                    MatchWorker.emit(Map.of("type", "NOTICE", "message", "That mana source could not be activated."));
+                }
+            }
         }
     }
 
     @Override
     public boolean chooseTargetsFor(SpellAbility currentAbility) {
         if (!currentAbility.usesTargeting()) return super.chooseTargetsFor(currentAbility);
-        humanTargets(currentAbility);
-        return currentAbility.isTargetNumberValid() || super.chooseTargetsFor(currentAbility);
+        return humanTargets(currentAbility);
     }
 
     @Override
