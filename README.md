@@ -1,6 +1,6 @@
-# Forge Companion Server v0.8
+# Forge Companion Server v0.9
 
-v0.8: London mulligan (always draw seven, then you pick cards for the bottom via a BOTTOM prompt answered with {cards:[ids]}).
+v0.9: London mulligan (always draw seven, then you pick cards for the bottom via a BOTTOM prompt answered with {cards:[ids]}).
 
 
 Drop-in source update for NerdzGaming/companion-server. Upload the contents of this
@@ -99,3 +99,6 @@ accepts ACT/PING/LEAVE. v0.7 adds STATE.actionLog and player/opponent.manaPool.
 Licence: Forge is GPL-3.0; the pinned upstream licence is included in the image
 as FORGE-LICENSE. This package builds the engine and packages card scripts/assets;
 artwork is loaded by the website separately.
+
+## v0.9
+- London mulligan: every mulligan shows a fresh seven; you choose cards to bottom only once, after you keep (CR 103.5).

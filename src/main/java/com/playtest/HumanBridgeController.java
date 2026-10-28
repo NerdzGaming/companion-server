@@ -149,30 +149,57 @@ public final class HumanBridgeController extends PlayerControllerAi {
         }
     }
 
+    /** Cards Forge asked us to tuck after the latest London redraw; settled once, when the player keeps. */
+    private int deferredTuck = 0;
+
     @Override
     public boolean mulliganKeepHand(Player firstPlayer, int cardsToReturn) {
         List<Map<String, Object>> hand = new ArrayList<>();
         for (Card c : getPlayer().getCardsIn(ZoneType.Hand)) hand.add(card(c));
         JsonNode a = ask("MULLIGAN", Map.of("hand", hand, "cardsToReturn", cardsToReturn));
-        if (a == null) return super.mulliganKeepHand(firstPlayer, cardsToReturn);
-        return a.path("keep").asBoolean(true);
+        boolean keep = a == null ? super.mulliganKeepHand(firstPlayer, cardsToReturn) : a.path("keep").asBoolean(true);
+        if (keep) settleDeferredTuck();
+        else deferredTuck = 0; // the whole hand is shuffled away; nothing to bottom from it
+        return keep;
     }
 
-    /** London mulligan: the website player chooses which cards go to the bottom. */
+    /** CR 103.5: bottom cards once, after the final keep, never between mulligans. */
+    private void settleDeferredTuck() {
+        int n = deferredTuck;
+        deferredTuck = 0;
+        if (n <= 0) return;
+        CardCollection hand = new CardCollection(getPlayer().getCardsIn(ZoneType.Hand));
+        for (Card c : chooseBottom(hand, Math.min(n, hand.size()))) {
+            getPlayer().getGame().getAction().moveToLibrary(c, -1, null);
+        }
+    }
+
+    /**
+     * Forge's LondonMulligan calls this straight after each redraw, before the next keep decision.
+     * Defer it so the player sees a full seven and bottoms only once they keep. If Forge will not
+     * offer another keep prompt (canMulligan false), tuck now so the count is never skipped.
+     */
     @Override
     public CardCollectionView tuckCardsViaMulligan(CardCollectionView hand, int cardsToReturn) {
-        if (cardsToReturn <= 0) return new CardCollection();
+        if (cardsToReturn <= 0) { deferredTuck = 0; return new CardCollection(); }
+        if (cardsToReturn > getPlayer().getMaxHandSize()) { deferredTuck = 0; return chooseBottom(hand, cardsToReturn); }
+        deferredTuck = cardsToReturn;
+        return new CardCollection();
+    }
+
+    private CardCollectionView chooseBottom(CardCollectionView hand, int count) {
+        if (count <= 0) return new CardCollection();
         List<Map<String, Object>> cards = new ArrayList<>();
         for (Card c : hand) cards.add(card(c));
-        JsonNode a = ask("BOTTOM", Map.of("hand", cards, "count", cardsToReturn));
-        if (a == null) return super.tuckCardsViaMulligan(hand, cardsToReturn);
+        JsonNode a = ask("BOTTOM", Map.of("hand", cards, "count", count));
+        if (a == null) return super.tuckCardsViaMulligan(hand, count);
         CardCollection out = new CardCollection();
         Set<Integer> seen = new HashSet<>();
         for (JsonNode id : a.path("cards")) {
-            if (out.size() >= cardsToReturn || !seen.add(id.asInt())) continue;
+            if (out.size() >= count || !seen.add(id.asInt())) continue;
             for (Card c : hand) if (c.getId() == id.asInt()) { out.add(c); break; }
         }
-        if (out.size() != cardsToReturn) return super.tuckCardsViaMulligan(hand, cardsToReturn);
+        if (out.size() != count) return super.tuckCardsViaMulligan(hand, count);
         return out;
     }
 
