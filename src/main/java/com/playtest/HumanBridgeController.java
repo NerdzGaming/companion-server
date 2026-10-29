@@ -11,6 +11,15 @@ import forge.game.ability.AbilityUtils;
 import forge.game.ability.ApiType;
 import forge.game.ability.effects.CharmEffect;
 import forge.game.cost.CostPayment;
+import forge.game.cost.CostDecisionMakerBase;
+import forge.game.cost.CostDiscard;
+import forge.game.cost.CostExile;
+import forge.game.cost.CostSacrifice;
+import forge.game.cost.CostPartMana;
+import forge.game.cost.PaymentDecision;
+import forge.game.mana.ManaConversionMatrix;
+import forge.game.mana.ManaCostBeingPaid;
+import forge.game.card.CardLists;
 import forge.ai.AiCostDecision;
 import forge.game.zone.Zone;
 import forge.game.spellability.SpellAbilityStackInstance;
@@ -723,5 +732,84 @@ public final class HumanBridgeController extends PlayerControllerAi {
         List<String> got = pickStrings("Choose a protection type", sa, choices, 1, 1);
         if (got == null || got.isEmpty()) return super.chooseProtectionType(sa, choices);
         return got.get(0);
+    }
+    // ---------- v0.12: costs (discard / exile / sacrifice) and Phyrexian life are the player's call ----------
+
+    /** Cost payments route through this decision maker; card-choosing costs ask the player, everything else stays engine-default. */
+    @Override
+    public CostDecisionMakerBase getCostDecisionMaker(Player p, SpellAbility ability, boolean effect, String prompt) {
+        if (p != getPlayer()) return super.getCostDecisionMaker(p, ability, effect, prompt);
+        return new HumanCostDecision(p, ability, effect);
+    }
+
+    private final class HumanCostDecision extends AiCostDecision {
+        HumanCostDecision(Player p, SpellAbility sa, boolean effect) { super(p, sa, effect); }
+
+        private PaymentDecision choose(String verb, CardCollectionView valid, int amount, PaymentDecision fallback) {
+            List<Card> list = new ArrayList<>();
+            for (Card c : valid) list.add(c);
+            if (amount <= 0 || list.size() < amount) return fallback;
+            if (list.size() == amount) return PaymentDecision.card(new CardCollection(list));
+            List<Card> got = pick("CHOOSE", verb + " " + amount + " card" + (amount == 1 ? "" : "s") + " to pay the cost", ability, list, amount, amount);
+            return got == null ? fallback : PaymentDecision.card(new CardCollection(got));
+        }
+
+        @Override
+        public PaymentDecision visit(CostDiscard cost) {
+            String type = cost.getType();
+            if (cost.payCostFromSource() || type.equals("Hand") || type.equals("LastDrawn") || type.equals("Random") || type.contains("WithSameName") || type.contains("+WithDifferentNames")) return super.visit(cost);
+            int c = cost.getAbilityAmount(ability);
+            CardCollectionView valid = CardLists.getValidCards(player.getCardsIn(ZoneType.Hand), type.split(";"), player, source, ability);
+            return choose("Discard", valid, c, null);
+        }
+
+        @Override
+        public PaymentDecision visit(CostExile cost) {
+            String type = cost.getType();
+            if (cost.payCostFromSource() || type.equals("All") || type.contains("FromTopGrave") || type.contains("+withTotalCMCGE")) return super.visit(cost);
+            if (cost.getFrom().size() == 1 && cost.getFrom().get(0).equals(ZoneType.Library)) return super.visit(cost);
+            int c = cost.getAbilityAmount(ability);
+            CardCollectionView pool = cost.zoneRestriction != 1 ? player.getGame().getCardsIn(cost.getFrom()) : player.getCardsIn(cost.getFrom());
+            CardCollectionView valid = CardLists.getValidCards(pool, type.split(";"), player, source, ability);
+            return choose("Exile", valid, c, null);
+        }
+
+        @Override
+        public PaymentDecision visit(CostSacrifice cost) {
+            if (cost.payCostFromSource() || cost.getType().equals("OriginalHost") || cost.getAmount().equals("All")) return super.visit(cost);
+            int c = cost.getAbilityAmount(ability);
+            CardCollectionView valid = CardLists.getValidCards(player.getCardsIn(ZoneType.Battlefield), cost.getType().split(";"), player, source, ability);
+            return choose("Sacrifice", valid, c, null);
+        }
+    }
+
+    /** Phyrexian shards: ask once per shard whether to pay 2 life, then let the engine tap for the rest. */
+    @Override
+    public boolean payManaCost(forge.card.mana.ManaCost toPay, CostPartMana costPartMana, SpellAbility sa, String prompt, ManaConversionMatrix matrix, boolean effect) {
+        int phy = toPay == null ? 0 : toPay.getPhyrexianCount();
+        if (phy <= 0) return super.payManaCost(toPay, costPartMana, sa, prompt, matrix, effect);
+        Player me = getPlayer();
+        ManaCostBeingPaid being = new ManaCostBeingPaid(toPay);
+        int life = 0;
+        for (int i = 0; i < phy; i++) {
+            if (!me.canPayLife(life + 2, effect, sa)) break;
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("source", src(sa));
+            body.put("message", "Pay 2 life instead of Phyrexian mana" + (phy > 1 ? " (" + (i + 1) + " of " + phy + ")" : "") + "? You have " + (me.getLife() - life) + " life.");
+            JsonNode a = ask("CONFIRM", body);
+            if (a == null || !a.path("yes").asBoolean(false)) break;
+            if (being.payPhyrexian()) life += 2;
+        }
+        if (life > 0) {
+            if (!me.payLife(life, sa, effect)) return false;
+            sa.setSpendPhyrexianMana(true);
+        }
+        String prior = sa.getParam("AIPhyrexianPayment");
+        sa.putParam("AIPhyrexianPayment", "Never"); // declined shards must be paid with mana, not life
+        try {
+            return being.isPaid() || ComputerUtilMana.payManaCost(being, sa, me, effect);
+        } finally {
+            if (prior == null) sa.removeParam("AIPhyrexianPayment"); else sa.putParam("AIPhyrexianPayment", prior);
+        }
     }
 }
