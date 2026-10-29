@@ -20,6 +20,12 @@ import forge.game.card.CardCollectionView;
 import forge.ai.ComputerUtil;
 import forge.game.player.DelayedReveal;
 import forge.game.player.PlayerActionConfirmMode;
+import forge.game.player.PlayerController;
+import forge.card.ColorSet;
+import forge.card.MagicColor;
+import forge.game.card.CounterType;
+import forge.game.cost.CostPartWithList;
+import java.util.Collection;
 import forge.game.spellability.AbilitySub;
 import forge.util.collect.FCollectionView;
 import java.util.HashSet;
@@ -504,5 +510,218 @@ public final class HumanBridgeController extends PlayerControllerAi {
         if (list.size() <= lo) return new CardCollection(list);
         List<Card> got = pick("CHOOSE", title, sa, list, lo, Math.min(max, list.size()));
         return got != null ? new CardCollection(got) : super.chooseCardsForEffect(sourceList, sa, title, min, max, isOptional, params);
+    }
+
+    // ---------- v0.11: the player makes every remaining kind of choice ----------
+
+    /** Plain string options (creature types, colors, keywords) round-trip through CHOOSE with the text as the key. */
+    private List<String> pickStrings(String title, SpellAbility sa, List<String> options, int min, int max) {
+        List<Map<String, Object>> opts = new ArrayList<>();
+        for (String o : options) { Map<String, Object> m = new LinkedHashMap<>(); m.put("key", o); m.put("kind", "other"); m.put("label", o); opts.add(m); }
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("title", title == null ? "" : title); body.put("source", src(sa));
+        body.put("min", min); body.put("max", max); body.put("options", opts);
+        while (true) {
+            JsonNode a = ask("CHOOSE", body);
+            if (a == null) return null;
+            Set<String> chosen = keys(a);
+            List<String> out = new ArrayList<>();
+            for (String o : options) if (chosen.contains(o)) out.add(o);
+            if (out.size() >= min && out.size() <= max && out.size() == chosen.size()) return out;
+            MatchWorker.emit(Map.of("type", "NOTICE", "message", "That selection is not valid. Please choose again."));
+        }
+    }
+
+    /** Tutors and library searches: the player picks from the matching cards instead of the AI. */
+    @Override
+    public Card chooseSingleCardForZoneChange(ZoneType destination, List<ZoneType> origin, SpellAbility sa, CardCollection fetchList, DelayedReveal delayedReveal, String selectPrompt, boolean isOptional, Player decider) {
+        if (decider != getPlayer()) return super.chooseSingleCardForZoneChange(destination, origin, sa, fetchList, delayedReveal, selectPrompt, isOptional, decider);
+        if (delayedReveal != null) reveal(delayedReveal);
+        List<Card> list = new ArrayList<>(fetchList);
+        if (list.isEmpty()) return null;
+        if (list.size() == 1 && !isOptional) return list.get(0);
+        List<Card> got = pick("CHOOSE", selectPrompt, sa, list, isOptional ? 0 : 1, 1);
+        if (got == null) return super.chooseSingleCardForZoneChange(destination, origin, sa, fetchList, null, selectPrompt, isOptional, decider);
+        return got.isEmpty() ? null : got.get(0);
+    }
+
+    /** Yes/no questions ("Do you want to...?") go to the player. */
+    @Override
+    public boolean chooseBinary(SpellAbility sa, String question, PlayerController.BinaryChoiceType kindOfChoice, Boolean defaultVal) {
+        JsonNode a = ask("CONFIRM", Map.of("source", src(sa), "message", question == null || question.isBlank() ? "Do you want to do this?" : question));
+        if (a == null) return super.chooseBinary(sa, question, kindOfChoice, defaultVal);
+        return a.path("yes").asBoolean(defaultVal != null && defaultVal);
+    }
+
+    @Override
+    public int chooseNumber(SpellAbility sa, String title, int min, int max, Map<String, Object> params) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("source", src(sa)); body.put("title", title == null || title.isBlank() ? "Choose a number" : title);
+        body.put("min", min); body.put("max", max);
+        JsonNode a = ask("NUMBER", body);
+        if (a == null) return super.chooseNumber(sa, title, min, max, params);
+        return Math.max(min, Math.min(max, a.path("value").asInt(min)));
+    }
+
+    @Override
+    public int chooseNumber(SpellAbility sa, String title, int min, int max) {
+        return chooseNumber(sa, title, min, max, null);
+    }
+
+    @Override
+    public int chooseNumber(SpellAbility sa, String title, List<Integer> options, Player relatedPlayer) {
+        List<String> names = new ArrayList<>();
+        for (Integer o : options) names.add(String.valueOf(o));
+        if (names.isEmpty()) return super.chooseNumber(sa, title, options, relatedPlayer);
+        List<String> got = pickStrings(title, sa, names, 1, 1);
+        if (got == null || got.isEmpty()) return super.chooseNumber(sa, title, options, relatedPlayer);
+        return options.get(names.indexOf(got.get(0)));
+    }
+
+    /** Creature types and similar named choices (e.g. Cavern of Souls). */
+    @Override
+    public String chooseSomeType(String kindOfType, SpellAbility sa, Collection<String> validTypes, boolean isOptional) {
+        List<String> types = new ArrayList<>(validTypes);
+        if (types.isEmpty()) return super.chooseSomeType(kindOfType, sa, validTypes, isOptional);
+        List<String> got = pickStrings("Choose a " + kindOfType.toLowerCase(), sa, types, isOptional ? 0 : 1, 1);
+        if (got == null) return super.chooseSomeType(kindOfType, sa, validTypes, isOptional);
+        return got.isEmpty() ? null : got.get(0);
+    }
+
+    private static final byte[] COLOR_MASKS = { MagicColor.WHITE, MagicColor.BLUE, MagicColor.BLACK, MagicColor.RED, MagicColor.GREEN };
+    private static final String[] COLOR_NAMES = { "White", "Blue", "Black", "Red", "Green" };
+
+    private static List<String> colorNames(ColorSet colors, boolean allowColorless) {
+        List<String> names = new ArrayList<>();
+        for (int i = 0; i < COLOR_MASKS.length; i++) if ((colors.getColor() & COLOR_MASKS[i]) != 0) names.add(COLOR_NAMES[i]);
+        if (allowColorless && (colors.getColor() & MagicColor.COLORLESS) != 0) names.add("Colorless");
+        return names;
+    }
+
+    private static byte colorMask(String name) {
+        return switch (name) {
+            case "White" -> MagicColor.WHITE;
+            case "Blue" -> MagicColor.BLUE;
+            case "Black" -> MagicColor.BLACK;
+            case "Red" -> MagicColor.RED;
+            case "Green" -> MagicColor.GREEN;
+            default -> MagicColor.COLORLESS;
+        };
+    }
+
+    @Override
+    public byte chooseColor(String message, SpellAbility sa, ColorSet colors) {
+        List<String> names = colorNames(colors, false);
+        if (names.size() < 2) return super.chooseColor(message, sa, colors);
+        List<String> got = pickStrings(message, sa, names, 1, 1);
+        if (got == null || got.isEmpty()) return super.chooseColor(message, sa, colors);
+        return colorMask(got.get(0));
+    }
+
+    @Override
+    public byte chooseColorAllowColorless(String message, Card card, ColorSet colors) {
+        List<String> names = colorNames(colors, true);
+        if (names.size() < 2) return super.chooseColorAllowColorless(message, card, colors);
+        List<String> got = pickStrings(message, null, names, 1, 1);
+        if (got == null || got.isEmpty()) return super.chooseColorAllowColorless(message, card, colors);
+        return colorMask(got.get(0));
+    }
+
+    @Override
+    public ColorSet chooseColors(String message, SpellAbility sa, int min, int max, ColorSet options) {
+        List<String> names = colorNames(options, false);
+        if (names.size() <= min) return super.chooseColors(message, sa, min, max, options);
+        List<String> got = pickStrings(message, sa, names, min, Math.min(max, names.size()));
+        if (got == null) return super.chooseColors(message, sa, min, max, options);
+        int mask = 0;
+        for (String g : got) mask |= colorMask(g);
+        return ColorSet.fromMask(mask);
+    }
+
+    @Override
+    public CardCollectionView choosePermanentsToSacrifice(SpellAbility sa, int min, int max, CardCollectionView validTargets, String message) {
+        List<Card> list = new ArrayList<>(validTargets);
+        if (list.size() <= min) return new CardCollection(list);
+        List<Card> got = pick("CHOOSE", message, sa, list, min, Math.min(max, list.size()));
+        return got != null ? new CardCollection(got) : super.choosePermanentsToSacrifice(sa, min, max, validTargets, message);
+    }
+
+    @Override
+    public CardCollectionView choosePermanentsToDestroy(SpellAbility sa, int min, int max, CardCollectionView validTargets, String message) {
+        List<Card> list = new ArrayList<>(validTargets);
+        if (list.size() <= min) return new CardCollection(list);
+        List<Card> got = pick("CHOOSE", message, sa, list, min, Math.min(max, list.size()));
+        return got != null ? new CardCollection(got) : super.choosePermanentsToDestroy(sa, min, max, validTargets, message);
+    }
+
+    /** Discard down to maximum hand size at cleanup. */
+    @Override
+    public CardCollectionView chooseCardsToDiscardToMaximumHandSize(int numDiscard) {
+        List<Card> list = new ArrayList<>(getPlayer().getCardsIn(ZoneType.Hand));
+        if (list.size() <= numDiscard) return new CardCollection(list);
+        List<Card> got = pick("CHOOSE", "Discard down to " + getPlayer().getMaxHandSize() + " cards", null, list, numDiscard, numDiscard);
+        return got != null ? new CardCollection(got) : super.chooseCardsToDiscardToMaximumHandSize(numDiscard);
+    }
+
+    @Override
+    public CardCollection chooseCardsToDiscardFrom(Player p, SpellAbility sa, CardCollection validCards, int min, int max, CardCollectionView visibleToChooser) {
+        if (p != getPlayer()) return super.chooseCardsToDiscardFrom(p, sa, validCards, min, max, visibleToChooser);
+        List<Card> list = new ArrayList<>(validCards);
+        if (list.size() <= min) return new CardCollection(list);
+        List<Card> got = pick("CHOOSE", "Choose cards to discard", sa, list, min, Math.min(max, list.size()));
+        return got != null ? new CardCollection(got) : super.chooseCardsToDiscardFrom(p, sa, validCards, min, max, visibleToChooser);
+    }
+
+    @Override
+    public CardCollectionView chooseCardsToRevealFromHand(int min, int max, CardCollectionView valid) {
+        List<Card> list = new ArrayList<>(valid);
+        if (list.size() <= min) return new CardCollection(list);
+        List<Card> got = pick("CHOOSE", "Choose cards to reveal", null, list, min, Math.min(max, list.size()));
+        return got != null ? new CardCollection(got) : super.chooseCardsToRevealFromHand(min, max, valid);
+    }
+
+    /** Cards chosen to pay a cost (e.g. discard as an additional cost). */
+    @Override
+    public CardCollectionView chooseCardsForCost(CardCollectionView optionList, SpellAbility sa, CostPartWithList cpl, int amount, boolean isOptional, String prompt) {
+        List<Card> list = new ArrayList<>(optionList);
+        int lo = isOptional ? 0 : Math.min(amount, list.size());
+        if (list.size() <= lo) return new CardCollection(list);
+        List<Card> got = pick("CHOOSE", prompt, sa, list, lo, Math.min(amount, list.size()));
+        return got != null ? new CardCollection(got) : super.chooseCardsForCost(optionList, sa, cpl, amount, isOptional, prompt);
+    }
+
+    @Override
+    public SpellAbility chooseSingleSpellForEffect(List<SpellAbility> spells, SpellAbility sa, String title, Map<String, Object> params) {
+        if (spells.isEmpty()) return null;
+        if (spells.size() == 1) return spells.get(0);
+        List<SpellAbility> got = pick("CHOOSE", title, sa, spells, 1, 1);
+        if (got == null || got.isEmpty()) return super.chooseSingleSpellForEffect(spells, sa, title, params);
+        return got.get(0);
+    }
+
+    @Override
+    public CounterType chooseCounterType(List<CounterType> options, SpellAbility sa, String prompt, Map<String, Object> params) {
+        if (options.size() <= 1) return super.chooseCounterType(options, sa, prompt, params);
+        List<String> names = new ArrayList<>();
+        for (CounterType t : options) names.add(t.getName());
+        List<String> got = pickStrings(prompt, sa, names, 1, 1);
+        if (got == null || got.isEmpty()) return super.chooseCounterType(options, sa, prompt, params);
+        return options.get(names.indexOf(got.get(0)));
+    }
+
+    @Override
+    public String chooseKeywordForPump(List<String> options, SpellAbility sa, String prompt, Card tgtCard) {
+        if (options.size() <= 1) return super.chooseKeywordForPump(options, sa, prompt, tgtCard);
+        List<String> got = pickStrings(prompt, sa, options, 1, 1);
+        if (got == null || got.isEmpty()) return super.chooseKeywordForPump(options, sa, prompt, tgtCard);
+        return got.get(0);
+    }
+
+    @Override
+    public String chooseProtectionType(SpellAbility sa, List<String> choices) {
+        if (choices.size() <= 1) return super.chooseProtectionType(sa, choices);
+        List<String> got = pickStrings("Choose a protection type", sa, choices, 1, 1);
+        if (got == null || got.isEmpty()) return super.chooseProtectionType(sa, choices);
+        return got.get(0);
     }
 }
