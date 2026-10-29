@@ -3,6 +3,7 @@ package com.playtest;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.javalin.Javalin;
+import io.javalin.http.UnauthorizedResponse;
 import io.javalin.websocket.WsContext;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
@@ -26,20 +27,23 @@ public final class App {
     static final int MAX_MATCHES = Integer.parseInt(System.getenv().getOrDefault("MAX_MATCHES", "1"));
 
     static final class MatchSession {
-        final String id; final String playerDeck; final String aiDeck; final String format;
+        final String id; final String socketToken; volatile long tokenExpires; final String playerDeck; final String aiDeck; final String format;
         final Set<WsContext> sockets = ConcurrentHashMap.newKeySet();
         volatile Process worker; volatile long emptySince; volatile String lastState; volatile String lastPrompt; final long created = System.currentTimeMillis();
-        MatchSession(String id, String p, String a, String f) { this.id = id; playerDeck = p; aiDeck = a; format = f; }
+        MatchSession(String id, String p, String a, String f) { this.id = id; socketToken = TransportAccess.newToken(); tokenExpires = System.currentTimeMillis() + 5 * 60_000; playerDeck = p; aiDeck = a; format = f; }
     }
     static final Map<String, MatchSession> MATCHES = new ConcurrentHashMap<>();
 
     public static void main(String[] args) {
+        String apiKey = System.getenv("FORGE_TRANSPORT_SECRET");
+        TransportAccess.requireKey(apiKey);
         int port = Integer.parseInt(System.getenv().getOrDefault("PORT", "8080"));
         Javalin app = Javalin.create(cfg -> cfg.bundledPlugins.enableCors(c -> c.addRule(r -> r.anyHost())));
 
         app.get("/", ctx -> ctx.result("Forge Companion Server is active"));
 
         app.post("/match/create", ctx -> {
+            if (!TransportAccess.authorized(ctx.header("Authorization"), apiKey)) throw new UnauthorizedResponse();
             JsonNode body = JSON.readTree(ctx.body());
             String p = body.path("playerDeckDck").asText(""), a = body.path("aiDeckDck").asText("");
             String format = body.path("format").asText("Commander");
@@ -48,21 +52,34 @@ public final class App {
                 ctx.status(400).json(Map.of("error", "Send playerDeckDck and aiDeckDck (.dck text)")); return;
             }
             String id = UUID.randomUUID().toString();
-            MATCHES.put(id, new MatchSession(id, p, a, format));
-            ctx.json(Map.of("matchId", id, "status", "created"));
+            MatchSession m = new MatchSession(id, p, a, format);
+            MATCHES.put(id, m);
+            ctx.header("Cache-Control", "no-store");
+            ctx.json(Map.of("matchId", id, "socketToken", m.socketToken, "status", "created"));
+        });
+
+        app.wsBeforeUpgrade("/match/{id}", ctx -> {
+            MatchSession m = MATCHES.get(ctx.pathParam("id"));
+            if (m == null || !TransportAccess.validTicket(ctx.queryParam("ticket"), m.socketToken, m.tokenExpires, System.currentTimeMillis()))
+                throw new UnauthorizedResponse();
         });
 
         app.ws("/match/{id}", ws -> {
             ws.onConnect(ctx -> {
                 MatchSession m = MATCHES.get(ctx.pathParam("id"));
-                if (m == null) { ctx.send("{\"type\":\"ERROR\",\"message\":\"Unknown match\"}"); ctx.closeSession(); return; }
+                if (m == null || !TransportAccess.validTicket(ctx.queryParam("ticket"), m.socketToken, m.tokenExpires, System.currentTimeMillis())) { ctx.send("{\"type\":\"ERROR\",\"message\":\"Unknown match\"}"); ctx.closeSession(); return; }
                 ctx.session.setIdleTimeout(java.time.Duration.ofMinutes(15));
-                m.sockets.add(ctx);
+                synchronized (m) {
+                    if (!m.sockets.isEmpty()) { ctx.closeSession(); return; }
+                    m.sockets.add(ctx);
+                }
                 if (m.lastState != null) ctx.send(m.lastState);
                 if (m.lastPrompt != null) ctx.send(m.lastPrompt); // resend pending decision after reconnect
                 synchronized (m) { if (m.worker == null) start(m); }
             });
             ws.onMessage(ctx -> {
+                MatchSession authenticated = MATCHES.get(ctx.pathParam("id"));
+                if (authenticated == null || !authenticated.sockets.contains(ctx)) { ctx.closeSession(); return; }
                 JsonNode msg = JSON.readTree(ctx.message());
                 String type = msg.path("type").asText("");
                 if (type.equals("PING")) { ctx.send("{\"type\":\"PONG\"}"); return; }
@@ -81,7 +98,7 @@ public final class App {
             ws.onClose(ctx -> {
                 MatchSession m = MATCHES.get(ctx.pathParam("id"));
                 if (m != null) m.sockets.remove(ctx);
-                if (m != null && m.sockets.isEmpty()) m.emptySince = System.currentTimeMillis();
+                if (m != null && m.sockets.isEmpty()) { m.emptySince = System.currentTimeMillis(); m.tokenExpires = m.emptySince + 120_000; }
             });
         });
 

@@ -1,4 +1,21 @@
-# Companion Server v0.15
+# Companion Server v0.16
+
+## Protect the Render service
+
+1. In the Lovable secure secret form, click Generate for FORGE_TRANSPORT_SECRET, copy the value, and save.
+2. Render dashboard → your companion service → Environment → Add environment variable.
+   Set the name to FORGE_TRANSPORT_SECRET and paste the SAME value. Never use the visitor beta password here.
+3. Replace the repository's matching source files with this package's contents, preserving hosting settings and repository metadata; deploy on Render.
+4. Wait for Render to report a successful deploy. With no valid secret, this version intentionally refuses to start.
+5. Publish the updated website in Lovable; the public website needs the new connection code and secret.
+6. Start a NEW opponent match through the website after entering the visitor beta password.
+
+The public GET / health check stays available but cannot create, read or control games.
+POST /match/create requires a server-held Bearer credential. Its no-store response returns a unique opaque ticket for that match only.
+WebSocket upgrades require that ticket, expire five minutes after creation, and allow two minutes to reconnect after disconnect.
+Only one socket can control a match at a time. LEAVE deletes the match and invalidates its ticket. Keep access logs free of query strings because tickets are bearer credentials.
+
+Verify: unauthenticated HTTP creation returns 401; missing/wrong/expired socket tickets cannot connect; unlocked website creation, heartbeat, reconnection and Leave still work. The transport layer was tested locally; full Forge/Render deployment and real matches must still be checked.
 
 ## v0.15 changes
 - Alternative/additional casting variants are listed using the pinned engine APIs; optional kicker/buyback costs ask before casting.
@@ -73,9 +90,7 @@ Divided damage/counter allocation is rejected with a notice rather than cast
 with incomplete targets.
 
 The public Action log is a structured subset, not a complete rules-engine trace.
-The server retains its current unauthenticated UUID-based proof-of-concept match
-access; do not treat this package as authenticated multiplayer or raise capacity
-for public multi-user play without a separate access-control upgrade.
+Match creation requires FORGE_TRANSPORT_SECRET. Browser sockets require a match-scoped ticket. This is beta access, not per-customer multiplayer authorization; do not raise capacity for public multiplayer without per-seat ownership checks.
 
 ## Verify after deployment
 
