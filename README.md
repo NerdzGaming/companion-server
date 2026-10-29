@@ -1,4 +1,4 @@
-# Forge Companion Server v0.9
+# Forge Companion Server v0.10
 
 v0.9: London mulligan (always draw seven, then you pick cards for the bottom via a BOTTOM prompt answered with {cards:[ids]}).
 
@@ -15,8 +15,12 @@ folder to the repository root, not a nested companion-server folder.
 4. Open Playtest → Tools → Rules Mode and start a NEW match. Running workers use
    the previous version until they are stopped.
 
-Changed server source: HumanBridgeController.java, MatchWorker.java; new source:
-PublicActionLog.java. pom.xml and Dockerfile now agree on version 0.7.0.
+Changed since v0.9: PublicActionLog.java identifies the public drawing player.
+pom.xml and Dockerfile agree on version 0.10.0. The website bundles consecutive
+draws by player, raw engine turn and phase (for example, Player draws 7 cards).
+Separate players are never bundled together. Website turn tags and turn-begin
+messages display paired rounds: 1, 1, 2, 2. Raw engine turns remain unchanged
+so priority passing and rules timing are preserved.
 
 ## Changes
 

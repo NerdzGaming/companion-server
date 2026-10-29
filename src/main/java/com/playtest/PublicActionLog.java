@@ -49,7 +49,9 @@ public final class PublicActionLog {
     @Subscribe public void move(GameEventCardChangeZone e) {
         ZoneType from = e.from() == null ? null : e.from().zoneType();
         ZoneType to = e.to() == null ? null : e.to().zoneType();
-        if (from == ZoneType.Library && to == ZoneType.Hand) { add("state", "Draws a card."); return; }
+        // Include only the public drawing player's name, never the hidden card identity.
+        // The website bundles consecutive draws by player, engine turn and phase.
+        if (from == ZoneType.Library && to == ZoneType.Hand) { add("draw", e.to().player().getName() + " draws a card."); return; }
         if (!visible(from) && !visible(to)) return;
         // Mask a card entering a hidden zone even if its previous identity was public.
         String card = visible(to) ? name(e.card()) : "A card";
