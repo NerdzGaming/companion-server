@@ -1,4 +1,14 @@
-# Forge Companion Server v0.10
+# Companion Server v0.15
+
+## v0.15 changes
+- Alternative/additional casting variants are listed using the pinned engine APIs; optional kicker/buyback costs ask before casting.
+- Normal casting now uses the human cost decision handler instead of bypassing it with AiCostDecision. Discard/exile/sacrifice selections reach the browser.
+- Shock lands ask whether to pay 2 life to enter untapped through the engine's UnlessCost payment hook. Life is deducted only by engine payment.
+- Human controller reports isAI false; tutors can use Forge's human multi-select path.
+- Public face-up token snapshots include token and typeLine so website art searches can distinguish tokens from same-name cards. Face-down identities stay masked.
+- Website loading arcade and Join game gate are presentation-only; combat substep alerts use existing streamed engine phases.
+
+Verification: website regression tests and controlled browser checks are separate from companion validation. The full Java/Docker build and real card-specific matches still need verification after deployment.
 
 v0.9: London mulligan (always draw seven, then you pick cards for the bottom via a BOTTOM prompt answered with {cards:[ids]}).
 
@@ -12,7 +22,7 @@ folder to the repository root, not a nested companion-server folder.
 2. Upload Dockerfile, pom.xml, README.md, fixtures/ and src/ into the repository,
    replacing matching paths. Preserve your .git folder and hosting settings.
 3. Commit to main and wait for Render to finish deploying.
-4. Open Playtest → Tools → Rules Mode and start a NEW match. Running workers use
+4. Open Playtest → Game & opponents → AI Opponent and start a NEW match. Running workers use
    the previous version until they are stopped.
 
 Changed since v0.9: PublicActionLog.java identifies the public drawing player.

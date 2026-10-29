@@ -68,7 +68,7 @@ public final class App {
                 if (type.equals("PING")) { ctx.send("{\"type\":\"PONG\"}"); return; }
                 MatchSession m = MATCHES.get(ctx.pathParam("id"));
                 if (type.equals("LEAVE")) { if (m != null) end(m); ctx.closeSession(); return; }
-                if (!type.equals("ACT") || m == null || m.worker == null || !m.worker.isAlive()) {
+                if (!(type.equals("ACT") || type.equals("LOADING_HOLD")) || m == null || m.worker == null || !m.worker.isAlive()) {
                     ctx.send("{\"type\":\"ERROR\",\"message\":\"Unknown action or match not running\"}"); return;
                 }
                 // Forward the decision to the Forge worker (one JSON line on its stdin).

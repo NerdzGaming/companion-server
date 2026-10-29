@@ -11,6 +11,9 @@ import forge.game.ability.AbilityUtils;
 import forge.game.ability.ApiType;
 import forge.game.ability.effects.CharmEffect;
 import forge.game.cost.CostPayment;
+import forge.game.cost.Cost;
+import forge.game.cost.CostPayLife;
+import forge.game.spellability.OptionalCostValue;
 import forge.game.cost.CostDecisionMakerBase;
 import forge.game.cost.CostDiscard;
 import forge.game.cost.CostExile;
@@ -81,6 +84,8 @@ public final class HumanBridgeController extends PlayerControllerAi {
 
     public HumanBridgeController(Game game, Player p, LobbyPlayer lp) { super(game, p, lp); }
 
+    @Override public boolean isAI() { return false; }
+
     /** Emits a prompt and waits for the matching answer; null on timeout. */
     private JsonNode ask(String kind, Map<String, Object> body) {
         String id = kind + "-" + SEQ.incrementAndGet();
@@ -94,6 +99,11 @@ public final class HumanBridgeController extends PlayerControllerAi {
             while (System.currentTimeMillis() < deadline) {
                 JsonNode m = INBOX.poll(deadline - System.currentTimeMillis(), TimeUnit.MILLISECONDS);
                 if (m == null) break;
+                // A started loading arcade must not time out into automatic AI choices.
+                if ("LOADING_HOLD".equals(m.path("type").asText()) && m.path("waiting").asBoolean(false)) {
+                    deadline = System.currentTimeMillis() + TimeUnit.MINUTES.toMillis(TIMEOUT_MIN);
+                    continue;
+                }
                 if (id.equals(m.path("promptId").asText())) return m;
             }
         } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
@@ -117,11 +127,14 @@ public final class HumanBridgeController extends PlayerControllerAi {
             for (ZoneType z : ZONES) {
                 for (Card c : new ArrayList<>(me.getCardsIn(z))) {
                     try {
-                        for (SpellAbility sa : c.getAllPossibleAbilities(me, true)) {
-                            sa.setActivatingPlayer(me);
-                            if (!sa.canPlay()) continue;
-                            if (!sa.isLandAbility() && !forge.ai.ComputerUtilCost.canPayCost(sa, me, false)) continue;
-                            playable.add(sa);
+                        for (SpellAbility base : c.getAllPossibleAbilities(me, true)) {
+                            base.setActivatingPlayer(me);
+                            for (SpellAbility sa : GameActionUtil.getAdditionalCostSpell(base)) {
+                                sa.setActivatingPlayer(me);
+                                if (!sa.canPlay()) continue;
+                                if (!sa.isLandAbility() && !canPayHumanCost(sa.getPayCosts(), sa, false)) continue;
+                                playable.add(sa);
+                            }
                         }
                     } catch (RuntimeException ignored) { }
                 }
@@ -151,6 +164,18 @@ public final class HumanBridgeController extends PlayerControllerAi {
             if (idx < 0 || idx >= playable.size()) return null;
             SpellAbility sa = playable.get(idx);
             sa.setActivatingPlayer(me);
+            if (sa.isSpell()) {
+                List<OptionalCostValue> optional = GameActionUtil.getOptionalCostValues(sa);
+                if (!optional.isEmpty()) {
+                    List<OptionalCostValue> selected = chooseOptionalCosts(sa, optional);
+                    sa = GameActionUtil.addOptionalCosts(sa, selected);
+                    sa.setActivatingPlayer(me);
+                    if (!canPayHumanCost(sa.getPayCosts(), sa, false)) {
+                        MatchWorker.emit(Map.of("type", "NOTICE", "message", "The selected costs cannot be paid. Choose another casting option."));
+                        continue;
+                    }
+                }
+            }
             if (!sa.canPlay()) continue;
             if (sa.isManaAbility()) {
                 if (ComputerUtil.playNoStack(me, sa, me.getGame(), false)) MatchWorker.recordManaAction(sa);
@@ -400,7 +425,7 @@ public final class HumanBridgeController extends PlayerControllerAi {
         humanMana(sa);
         boolean refreeze = game.getStack().isFrozen();
         game.getStack().freezeStack(sa);
-        if (payment.payComputerCosts(new AiCostDecision(me, sa, false))) {
+        if (payment.payComputerCosts(new HumanCostDecision(me, sa, false))) {
             game.getStack().addAndUnfreeze(sa);
             if (sa.getSplicedCards() != null && !sa.getSplicedCards().isEmpty())
                 game.getAction().reveal(sa.getSplicedCards(), me, true, "Reveals spliced cards from ");
@@ -745,6 +770,36 @@ public final class HumanBridgeController extends PlayerControllerAi {
     }
     // ---------- v0.12: costs (discard / exile / sacrifice) and Phyrexian life are the player's call ----------
 
+    /** Only affordability and engine restrictions, never AI strategic life/planeswalker thresholds. */
+    private boolean canPayHumanCost(Cost cost, SpellAbility sa, boolean effect) {
+        if (cost == null) return true;
+        return ComputerUtilMana.canPayManaCost(cost, sa, getPlayer(), 0, effect)
+            && CostPayment.canPayAdditionalCosts(cost, sa, effect, getPlayer());
+    }
+
+    @Override
+    public List<OptionalCostValue> chooseOptionalCosts(SpellAbility sa, List<OptionalCostValue> optional) {
+        List<OptionalCostValue> selected = new ArrayList<>();
+        for (OptionalCostValue value : optional) {
+            JsonNode a = ask("CONFIRM", Map.of("source", src(sa), "message", "Add optional cost: " + value + "?"));
+            if (a != null && a.path("yes").asBoolean(false)) selected.add(value);
+        }
+        return selected;
+    }
+
+    /** Shock-land ETB and other UnlessCost effects must ask the human, not willPayUnlessCost AI. */
+    @Override
+    public boolean payCostToPreventEffect(Cost cost, SpellAbility sa, boolean alreadyPaid, FCollectionView<Player> allPayers) {
+        if (!canPayHumanCost(cost, sa, true)) return false;
+        boolean shock = sa.hasParam("ETB") && sa.getApi() == ApiType.Tap
+            && cost.getCostParts().stream().anyMatch(part -> part instanceof CostPayLife life && life.getAbilityAmount(sa) == 2);
+        String message = shock ? "Pay 2 life to have " + src(sa) + " enter untapped?"
+            : "Pay " + cost.toSimpleString() + " to prevent this effect?";
+        JsonNode a = ask("CONFIRM", Map.of("source", src(sa), "message", message));
+        if (a == null || !a.path("yes").asBoolean(false)) return false;
+        return new CostPayment(cost, sa).payComputerCosts(new HumanCostDecision(getPlayer(), sa, true));
+    }
+
     /** Cost payments route through this decision maker; card-choosing costs ask the player, everything else stays engine-default. */
     @Override
     public CostDecisionMakerBase getCostDecisionMaker(Player p, SpellAbility ability, boolean effect, String prompt) {
@@ -754,6 +809,12 @@ public final class HumanBridgeController extends PlayerControllerAi {
 
     private final class HumanCostDecision extends AiCostDecision {
         HumanCostDecision(Player p, SpellAbility sa, boolean effect) { super(p, sa, effect); }
+
+        @Override
+        public PaymentDecision visit(CostPayLife cost) {
+            int amount = cost.getAbilityAmount(ability);
+            return player.canPayLife(amount, isEffect(), ability) ? PaymentDecision.number(amount) : null;
+        }
 
         private PaymentDecision choose(String verb, CardCollectionView valid, int amount, PaymentDecision fallback) {
             List<Card> list = new ArrayList<>();

@@ -122,6 +122,10 @@ public final class MatchWorker {
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("id", c.getId());
             m.put("name", visibleName(c));
+            if (!c.isFaceDown()) {
+                m.put("token", c.isToken());
+                m.put("typeLine", c.getType().toString());
+            }
             if (withState) { m.put("tapped", c.isTapped()); if (c.isCreature()) { m.put("power", c.getNetPower()); m.put("toughness", c.getNetToughness()); }
                 if (c.getEntityAttachedTo() instanceof Card host) m.put("attachedTo", host.getId()); }
             list.add(m);
