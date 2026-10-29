@@ -554,6 +554,16 @@ public final class HumanBridgeController extends PlayerControllerAi {
         return got.isEmpty() ? null : got.get(0);
     }
 
+    /** Multi-card searches ("search for up to two basic lands"): the player picks the whole set. */
+    @Override
+    public List<Card> chooseCardsForZoneChange(ZoneType destination, List<ZoneType> origin, SpellAbility sa, CardCollection fetchList, int min, int max, DelayedReveal delayedReveal, String selectPrompt, Player decider) {
+        if (decider != getPlayer()) return super.chooseCardsForZoneChange(destination, origin, sa, fetchList, min, max, delayedReveal, selectPrompt, decider);
+        List<Card> list = new ArrayList<>(fetchList);
+        if (list.isEmpty()) return new ArrayList<>();
+        List<Card> got = pick("CHOOSE", selectPrompt, sa, list, Math.min(min, list.size()), Math.min(max, list.size()));
+        return got == null ? super.chooseCardsForZoneChange(destination, origin, sa, fetchList, min, max, delayedReveal, selectPrompt, decider) : got;
+    }
+
     /** Yes/no questions ("Do you want to...?") go to the player. */
     @Override
     public boolean chooseBinary(SpellAbility sa, String question, PlayerController.BinaryChoiceType kindOfChoice, Boolean defaultVal) {
