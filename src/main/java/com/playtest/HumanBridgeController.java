@@ -120,7 +120,7 @@ public final class HumanBridgeController extends PlayerControllerAi {
                         for (SpellAbility sa : c.getAllPossibleAbilities(me, true)) {
                             sa.setActivatingPlayer(me);
                             if (!sa.canPlay()) continue;
-                            if (!sa.isLandAbility() && !ComputerUtilMana.canPayManaCost(sa, me, 0, false)) continue;
+                            if (!sa.isLandAbility() && !forge.ai.ComputerUtilCost.canPayCost(sa, me, false)) continue;
                             playable.add(sa);
                         }
                     } catch (RuntimeException ignored) { }
