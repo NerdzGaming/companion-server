@@ -58,6 +58,7 @@ import java.util.Map;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import org.apache.commons.lang3.tuple.ImmutablePair;
 
 /**
  * Website seat. Asks the browser (via stdout PROMPT lines / stdin ACT lines) for priority,
@@ -107,7 +108,7 @@ public final class HumanBridgeController extends PlayerControllerAi {
                 if (id.equals(m.path("promptId").asText())) return m;
             }
         } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
-        MatchWorker.emit(Map.of("type", "NOTICE", "message", "No answer in time — Forge AI decided for you."));
+        MatchWorker.emit(Map.of("type", "NOTICE", "message", "SURVEIL".equals(kind) ? "No answer in time — surveilled cards stay on top in their original order." : "No answer in time — Forge AI decided for you."));
         return null;
     }
 
@@ -115,6 +116,7 @@ public final class HumanBridgeController extends PlayerControllerAi {
     private static Map<String, Object> card(Card c) {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("id", c.getId()); m.put("name", c.getName());
+        if (!c.isFaceDown() && c.isPlaneswalker()) m.put("loyalty", c.getCurrentLoyalty());
         if (c.isCreature()) { m.put("power", c.getNetPower()); m.put("toughness", c.getNetToughness()); }
         return m;
     }
@@ -245,18 +247,61 @@ public final class HumanBridgeController extends PlayerControllerAi {
 
     @Override
     public void declareAttackers(Player attacker, Combat combat) {
-        GameEntity defender = null;
-        for (GameEntity e : combat.getDefenders()) { if (e instanceof Player) { defender = e; break; } }
-        if (defender == null) { super.declareAttackers(attacker, combat); return; }
+        List<GameEntity> defenders = new ArrayList<>(combat.getDefenders());
+        if (defenders.isEmpty()) return;
         List<Card> able = new ArrayList<>();
-        for (Card c : attacker.getCreaturesInPlay()) if (CombatUtil.canAttack(c, defender)) able.add(c);
+        Map<Integer, List<String>> legal = new LinkedHashMap<>();
+        for (Card c : attacker.getCreaturesInPlay()) {
+            List<String> targets = new ArrayList<>();
+            for (GameEntity d : defenders) if (CombatUtil.canAttack(c, d)) targets.add(key(d));
+            if (!targets.isEmpty()) { able.add(c); legal.put(c.getId(), targets); }
+        }
         if (able.isEmpty()) return;
         List<Map<String, Object>> opts = new ArrayList<>();
         for (Card c : able) opts.add(card(c));
-        JsonNode a = ask("ATTACK", Map.of("attackers", opts, "defender", ((Player) defender).getName()));
-        if (a == null) { super.declareAttackers(attacker, combat); return; }
-        for (JsonNode id : a.path("attackers")) {
-            for (Card c : able) if (c.getId() == id.asInt()) combat.addAttacker(c, defender);
+        List<Map<String, Object>> targets = new ArrayList<>();
+        for (GameEntity d : defenders) targets.add(entity(d));
+        while (true) {
+            JsonNode a = ask("ATTACK", Map.of("attackers", opts, "defender", defenders.get(0).getName(), "defenders", targets, "legalDefenders", legal));
+            if (a == null) { super.declareAttackers(attacker, combat); return; }
+            Map<Integer, String> chosen = new LinkedHashMap<>();
+            boolean unique = a.path("assignments").isArray();
+            for (JsonNode assignment : a.path("assignments")) {
+                int id = assignment.path("attacker").asInt(-1);
+                if (chosen.put(id, assignment.path("defender").asText()) != null) unique = false;
+            }
+            if (unique && HumanChoices.validAttack(legal, chosen)) {
+                combat.clearAttackers();
+                for (Card c : able) for (GameEntity d : defenders)
+                    if (key(d).equals(chosen.get(c.getId())) && CombatUtil.canAttack(c, d)) combat.addAttacker(c, d);
+                if (CombatUtil.validateAttackers(combat)) return;
+                combat.clearAttackers();
+            }
+            MatchWorker.emit(Map.of("type", "NOTICE", "message", "That attack does not meet the combat restrictions. Choose attackers and defenders again."));
+        }
+    }
+
+    /** Reveal only the human's looked-at cards; Forge performs the moves and triggers. */
+    @Override
+    public ImmutablePair<CardCollection, CardCollection> arrangeForSurveil(CardCollection topN) {
+        if (topN.isEmpty()) return ImmutablePair.of(new CardCollection(), new CardCollection());
+        List<Map<String, Object>> options = new ArrayList<>();
+        List<Integer> offered = new ArrayList<>();
+        for (Card c : topN) { options.add(card(c)); offered.add(c.getId()); }
+        while (true) {
+            JsonNode a = ask("SURVEIL", Map.of("cards", options));
+            // A missed answer must not secretly evaluate or mill the player's cards.
+            if (a == null) return ImmutablePair.of(new CardCollection(topN), new CardCollection());
+            List<Integer> topIds = new ArrayList<>(), graveIds = new ArrayList<>();
+            for (JsonNode id : a.path("top")) topIds.add(id.asInt(-1));
+            for (JsonNode id : a.path("graveyard")) graveIds.add(id.asInt(-1));
+            if (a.path("top").isArray() && a.path("graveyard").isArray() && HumanChoices.validPartition(offered, topIds, graveIds)) {
+                CardCollection top = new CardCollection(), grave = new CardCollection();
+                for (Integer id : topIds) for (Card c : topN) if (c.getId() == id) top.add(c);
+                for (Integer id : graveIds) for (Card c : topN) if (c.getId() == id) grave.add(c);
+                return ImmutablePair.of(top, grave);
+            }
+            MatchWorker.emit(Map.of("type", "NOTICE", "message", "Each surveilled card must be kept or put in the graveyard exactly once. Please choose again."));
         }
     }
 

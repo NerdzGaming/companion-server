@@ -31,6 +31,8 @@ public final class PublicActionLog {
     @Subscribe public void turn(GameEventTurnBegan e) { add("state", "Turn " + e.turnNumber() + " begins — " + e.turnOwner().getName() + "."); }
     @Subscribe public void phase(GameEventTurnPhase e) { add("state", e.playerTurn().getName() + " enters " + e.phase().name() + "."); }
     @Subscribe public void life(GameEventPlayerLivesChanged e) { add("state", e.player().getName() + " life " + e.oldLives() + " → " + e.newLives() + "."); }
+    // Counter costs and damage must refresh loyalty even before the next priority prompt.
+    @Subscribe public void counters(GameEventCardCounters e) { MatchWorker.emit(MatchWorker.snapshot(game)); }
     @Subscribe public void land(GameEventLandPlayed e) { add("state", e.player().getName() + " plays " + name(e.land()) + "."); }
     @Subscribe public void cast(GameEventSpellAbilityCast e) {
         // Do not include targetDescription or arbitrary stack text: either may contain hidden identities.

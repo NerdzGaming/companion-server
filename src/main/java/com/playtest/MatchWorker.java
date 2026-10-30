@@ -126,7 +126,9 @@ public final class MatchWorker {
                 m.put("token", c.isToken());
                 m.put("typeLine", c.getType().toString());
             }
-            if (withState) { m.put("tapped", c.isTapped()); if (c.isCreature()) { m.put("power", c.getNetPower()); m.put("toughness", c.getNetToughness()); }
+            if (withState) { m.put("tapped", c.isTapped());
+                if (!c.isFaceDown() && c.isPlaneswalker()) m.put("loyalty", c.getCurrentLoyalty());
+                if (c.isCreature()) { m.put("power", c.getNetPower()); m.put("toughness", c.getNetToughness()); }
                 if (c.getEntityAttachedTo() instanceof Card host) m.put("attachedTo", host.getId()); }
             list.add(m);
         }

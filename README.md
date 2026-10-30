@@ -1,4 +1,13 @@
-# Companion Server v0.16
+# Companion Server v0.17
+
+## v0.17: planeswalkers and surveil
+- Attack choices include the engine's actual player, planeswalker and battle defenders, separately for each attacker. Invalid attacks re-prompt and engine attack requirements still apply.
+- Face-up battlefield planeswalkers stream numeric current loyalty, including changes after ability costs or damage. Forge still removes zero-loyalty planeswalkers; the website does not alter counters or state-based actions.
+- Surveil shows the human's looked-at card art, lets them choose graveyard cards and top-first ordering, and returns the exact partition to Forge. Hidden cards never enter public snapshots/logs. Unanswered surveil keeps the original order instead of AI milling cards.
+- Keeps all v0.16 connection protection. Keep your existing FORGE_TRANSPORT_SECRET unchanged.
+
+Deploy this package on Render, publish the matching website, then start a NEW match. Older workers will not gain these changes.
+Verification: pure human-choice and transport checks run separately from a full pinned Forge build; real planeswalker/surveil matches must be verified after deployment.
 
 ## Protect the Render service
 
