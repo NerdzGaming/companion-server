@@ -1,4 +1,14 @@
-# Companion Server v0.18
+# Companion Server v0.22
+
+## v0.22: X and Phyrexian payment
+- Human spells and activated mana/non-mana abilities announce X before targets and costs, matching the pinned PlaySpellAbility lifecycle. Copies and fixed X definitions are preserved.
+- X uses engine announcement bounds, not an unreliable mana estimate or artificial 99 limit. Forge validates actual affordability at payment; enter large values directly in the website number picker.
+- The mana window runs inside the engine payment callback after cost adjustments and X expansion, including pool-only and life-only casts with no battlefield sources.
+- Each distinct Phyrexian symbol offers a life counter. Selected symbols cost exactly two life each; declined colours stay payable with mana. Auto-pay retains the explicit life selection and cannot choose additional life payment.
+- No life is charged when residual mana payment fails. Activated mana remains subject to the existing engine behavior on failed casts.
+- Preserves transport protection, undo, human choices and the 15-minute inactivity default. Keep FORGE_TRANSPORT_SECRET unchanged.
+
+Deploy on Render, publish the matching website and start a NEW match. Test Fireball/Torment at X=0 and X=4, an activated X ability, Mutagenic Growth with no lands and two life, mixed colour Phyrexian choices, insufficient life, and a spell with cost reductions/tax. Full pinned compilation and real-game verification are still required after deployment.
 
 ## v0.18: colorless mana, library tops and human mana abilities
 - Colorless pool counts use ManaAtom.COLORLESS, not the card-characteristic MagicColor.COLORLESS; Sol Ring's two mana can now be displayed without changing Forge payment rules.

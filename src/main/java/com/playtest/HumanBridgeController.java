@@ -36,6 +36,7 @@ import forge.game.player.DelayedReveal;
 import forge.game.player.PlayerActionConfirmMode;
 import forge.game.player.PlayerController;
 import forge.card.ColorSet;
+import forge.card.mana.ManaCostShard;
 import forge.card.MagicColor;
 import forge.game.card.CounterType;
 import forge.game.cost.CostPartWithList;
@@ -469,6 +470,7 @@ public final class HumanBridgeController extends PlayerControllerAi {
         if (!sa.isManaAbility() || !sa.canPlay() || !canPayHumanCost(sa.getPayCosts(), sa, false)) return false;
         sa.resetPaidHash();
         sa.setPaidLife(0);
+        if (!announceHumanValues(sa)) return false;
         CostPayment payment = new CostPayment(sa.getPayCosts(), sa);
         if (!payment.payComputerCosts(new HumanCostDecision(me, sa, false))) return false;
         AbilityUtils.resolve(sa);
@@ -492,11 +494,10 @@ public final class HumanBridgeController extends PlayerControllerAi {
         if (!sa.isCopied()) { sa.resetPaidHash(); sa.setPaidLife(0); }
         sa = GameActionUtil.addExtraKeywordCost(sa);
         CostPayment payment = new CostPayment(sa.getPayCosts(), sa);
-        if ((sa.getApi() == ApiType.Charm && !CharmEffect.makeChoices(sa)) || !humanTargets(sa)) {
+        if (!announceHumanValues(sa) || (sa.getApi() == ApiType.Charm && !CharmEffect.makeChoices(sa)) || !humanTargets(sa)) {
             if (sa.isSpell()) GameActionUtil.rollbackAbility(sa, original, position, payment, source);
             return false;
         }
-        humanMana(sa);
         boolean refreeze = game.getStack().isFrozen();
         game.getStack().freezeStack(sa);
         if (payment.payComputerCosts(new HumanCostDecision(me, sa, false))) {
@@ -511,12 +512,34 @@ public final class HumanBridgeController extends PlayerControllerAi {
         return false;
     }
 
-    /** Lets the player pick which mana sources to tap; Forge only pays whatever is still missing. */
-    private void humanMana(SpellAbility sa) {
-        if (!sa.isTargetNumberValid()) return;
-        forge.card.mana.ManaCost cost;
-        try { cost = sa.getPayCosts() == null ? null : sa.getPayCosts().getTotalMana(); } catch (RuntimeException e) { cost = null; }
-        if (cost == null || cost.isZero()) return;
+    /** Mirror PlaySpellAbility's announcement boundary before targets and costs. */
+    private boolean announceHumanValues(SpellAbility sa) {
+        if (sa.isCopied() || sa.isWrapper()) return true;
+        boolean needX = true;
+        String announce = sa.getParam("Announce");
+        if (announce != null) for (String name : announce.split(",")) {
+            String variable = name.trim();
+            var range = AbilityUtils.getAnnouncementBounds(sa, variable);
+            Integer value = announceRequirements(sa, range.getMinimum(), range.getMaximum(), variable);
+            if (value == null) return false;
+            if ("X".equalsIgnoreCase(variable)) { sa.setXManaCostPaid(value); needX = false; }
+            else { sa.setSVar(variable, value.toString()); sa.getHostCard().setSVar(variable, value.toString()); }
+        }
+        Cost cost = sa.getPayCosts();
+        if (needX && cost != null && cost.hasXInAnyCostPart()) {
+            String definition = sa.getParamOrDefault("XAlternative", sa.getSVar("X"));
+            if (ManaPaymentChoices.shouldAnnounceX(sa.isCopied(), sa.isWrapper(), cost.hasXInAnyCostPart(), definition)) {
+                var range = AbilityUtils.getAnnouncementBounds(sa, "X");
+                Integer value = announceRequirements(sa, range.getMinimum(), range.getMaximum(), "X");
+                if (value == null) return false;
+                sa.setXManaCostPaid(value);
+            }
+        } else if (needX) sa.setXManaCostPaid(null);
+        return true;
+    }
+
+    /** Called only inside actual adjusted mana payment, including pool-only/life-only casts. */
+    private JsonNode humanMana(SpellAbility sa, ManaCostBeingPaid cost, boolean effect) {
         Player me = getPlayer();
         List<SpellAbility> sources = new ArrayList<>();
         for (Card c : new ArrayList<>(me.getCardsIn(ZoneType.Battlefield))) {
@@ -525,7 +548,6 @@ public final class HumanBridgeController extends PlayerControllerAi {
                 try { ma.setActivatingPlayer(me); if (ma.canPlay()) sources.add(ma); } catch (RuntimeException ignored) { }
             }
         }
-        if (sources.isEmpty()) return;
         List<Map<String, Object>> opts = new ArrayList<>();
         for (int i = 0; i < sources.size(); i++) {
             SpellAbility ma = sources.get(i);
@@ -536,23 +558,43 @@ public final class HumanBridgeController extends PlayerControllerAi {
             m.put("label", ma.getHostCard().getName() + (multi && d != null && !d.isBlank() ? " — " + d : ""));
             opts.add(m);
         }
+        List<Map<String, Object>> shards = new ArrayList<>();
+        int count = 0;
+        for (ManaCostShard shard : new java.util.LinkedHashSet<>(cost.getUnpaidShards())) if (shard.isPhyrexian()) {
+            int n = cost.getUnpaidShards(shard);
+            count += n;
+            shards.add(Map.of("key", shard.name(), "label", shard.toString(), "count", n));
+        }
+        int maxLife = 0;
+        while (maxLife < count && me.canPayLife((maxLife + 1) * 2, effect, sa)) maxLife++;
         Map<String, Object> body = new LinkedHashMap<>();
-        body.put("source", src(sa)); body.put("cost", cost.toString()); body.put("options", opts);
+        body.put("source", src(sa)); body.put("cost", cost.toManaCost().toString()); body.put("options", opts);
         body.put("pool", MatchWorker.manaPool(me));
-        JsonNode a = ask("MANA", body);
-        if (a == null || a.path("auto").asBoolean(false)) return; // Forge auto-taps
-        for (JsonNode selected : a.path("keys")) {
-            String value = selected.asText();
-            for (int i = 0; i < sources.size(); i++) {
-                if (!value.equals("m" + i)) continue;
-                SpellAbility ma = sources.get(i);
-                try {
-                    if (activateHumanMana(ma)) MatchWorker.recordManaAction(ma);
-                } catch (RuntimeException ignored) {
-                    MatchWorker.emit(Map.of("type", "NOTICE", "message", "That mana source could not be activated."));
-                }
+        if (sa.getXManaCostPaid() != null) body.put("x", sa.getXManaCostPaid());
+        if (count > 0) body.put("phyrexian", Map.of("shards", shards, "maxLifePips", maxLife));
+        JsonNode a;
+        while (true) {
+            a = ask("MANA", body);
+            if (a == null) return null;
+            Map<String, Integer> offered = new LinkedHashMap<>(), selected = new LinkedHashMap<>();
+            for (Map<String, Object> shard : shards) offered.put((String) shard.get("key"), (Integer) shard.get("count"));
+            boolean valid = !a.has("phyrexian") || a.path("phyrexian").isObject();
+            var fields = a.path("phyrexian").fields();
+            while (fields.hasNext()) {
+                var field = fields.next();
+                if (!field.getValue().isIntegralNumber() || !field.getValue().canConvertToInt()) valid = false;
+                selected.put(field.getKey(), field.getValue().asInt(-1));
+            }
+            if (valid && ManaPaymentChoices.validLifeSelection(offered, selected, maxLife)) break;
+            MatchWorker.emit(Map.of("type", "NOTICE", "message", "Choose only offered Phyrexian symbols within your life-payment limit."));
+        }
+        if (!a.path("auto").asBoolean(false)) for (String selected : keys(a)) {
+            for (int i = 0; i < sources.size(); i++) if (selected.equals("m" + i)) {
+                try { if (activateHumanMana(sources.get(i))) MatchWorker.recordManaAction(sources.get(i)); }
+                catch (RuntimeException ignored) { MatchWorker.emit(Map.of("type", "NOTICE", "message", "That mana source could not be activated.")); }
             }
         }
+        return a;
     }
 
     // ---------- v0.20: triggered abilities (ETB etc.) and X announcements are the player's call ----------
@@ -597,28 +639,23 @@ public final class HumanBridgeController extends PlayerControllerAi {
         return ComputerUtil.playNoStack(wrapperAbility.getActivatingPlayer(), wrapperAbility, getGame(), true);
     }
 
-    /** X and other announced values: ask with a +/- number picker capped by what can actually be paid. */
+    /** Engine bounds apply; estimates must not force X to zero or cap legal large values. */
     @Override
     public Integer announceRequirements(SpellAbility ability, int min, int max, String announce) {
         int cap = max;
-        if ("X".equals(announce)) {
-            Cost cost = ability.getPayCosts();
-            Integer nonMana = cost == null ? null : cost.getMaxForNonManaX(ability, getPlayer(), false);
+        Cost cost = ability.getPayCosts();
+        if ("X".equalsIgnoreCase(announce) && cost != null) {
+            Integer nonMana = cost.getMaxForNonManaX(ability, getPlayer(), false);
             if (nonMana != null) cap = Math.min(cap, nonMana);
-            else {
-                int mana = ComputerUtilMana.getAvailableManaEstimate(getPlayer(), false) + getPlayer().getManaPool().totalMana();
-                cap = Math.min(cap, Math.max(min, mana));
-            }
         }
-        cap = Math.min(cap, 99);
         if (min > cap) return null;
-        Map<String, Object> body = new LinkedHashMap<>();
-        body.put("source", src(ability)); body.put("title", "Choose a value for " + announce);
-        body.put("min", min); body.put("max", cap);
-        JsonNode a = ask("NUMBER", body);
-        if (a == null) return super.announceRequirements(ability, min, max, announce);
-        int v = a.path("value").asInt(min);
-        return Math.max(min, Math.min(cap, v));
+        while (true) {
+            JsonNode a = ask("NUMBER", Map.of("source", src(ability), "title", "Choose a value for " + announce, "min", min, "max", cap));
+            if (a == null) return super.announceRequirements(ability, min, cap, announce);
+            JsonNode value = a.path("value");
+            if (value.isIntegralNumber() && value.canConvertToInt() && value.asInt() >= min && value.asInt() <= cap) return value.asInt();
+            MatchWorker.emit(Map.of("type", "NOTICE", "message", "Choose a number within the offered range."));
+        }
     }
 
     @Override
@@ -1002,31 +1039,30 @@ public final class HumanBridgeController extends PlayerControllerAi {
         }
     }
 
-    /** Phyrexian shards: ask once per shard whether to pay 2 life, then let the engine tap for the rest. */
+    /** Expand announced X and cost adjustments through Forge, then take one human payment decision. */
     @Override
     public boolean payManaCost(forge.card.mana.ManaCost toPay, CostPartMana costPartMana, SpellAbility sa, String prompt, ManaConversionMatrix matrix, boolean effect) {
-        int phy = toPay == null ? 0 : toPay.getPhyrexianCount();
-        if (phy <= 0) return super.payManaCost(toPay, costPartMana, sa, prompt, matrix, effect);
         Player me = getPlayer();
-        ManaCostBeingPaid being = new ManaCostBeingPaid(toPay);
+        ManaCostBeingPaid being = ComputerUtilMana.calculateManaCost(new Cost(toPay, effect), sa, me, false, 0, effect);
+        if (being.isPaid()) return true;
+        JsonNode answer = humanMana(sa, being, effect);
+        if (answer == null) return ComputerUtilMana.payManaCost(being, sa, me, effect); // explicit inactivity fallback only
         int life = 0;
-        for (int i = 0; i < phy; i++) {
-            if (!me.canPayLife(life + 2, effect, sa)) break;
-            Map<String, Object> body = new LinkedHashMap<>();
-            body.put("source", src(sa));
-            body.put("message", "Pay 2 life instead of Phyrexian mana" + (phy > 1 ? " (" + (i + 1) + " of " + phy + ")" : "") + "? You have " + (me.getLife() - life) + " life.");
-            JsonNode a = ask("CONFIRM", body);
-            if (a == null || !a.path("yes").asBoolean(false)) break;
-            if (being.payPhyrexian()) life += 2;
+        for (ManaCostShard shard : new java.util.LinkedHashSet<>(being.getUnpaidShards())) if (shard.isPhyrexian()) {
+            int count = answer.path("phyrexian").path(shard.name()).asInt(0);
+            if (count > 0) { being.decreaseShard(shard, count); life += count * 2; }
         }
-        if (life > 0) {
-            if (!me.payLife(life, sa, effect)) return false;
-            sa.setSpendPhyrexianMana(true);
-        }
+        if (life > 0 && !me.canPayLife(life, effect, sa)) return false;
         String prior = sa.getParam("AIPhyrexianPayment");
-        sa.putParam("AIPhyrexianPayment", "Never"); // declined shards must be paid with mana, not life
+        sa.putParam("AIPhyrexianPayment", "Never");
         try {
-            return being.isPaid() || ComputerUtilMana.payManaCost(being, sa, me, effect);
+            boolean paid = being.isPaid() || ComputerUtilMana.payManaCost(being, sa, me, effect);
+            if (!paid) return false;
+            if (life > 0) {
+                if (!me.payLife(life, sa, effect)) return false;
+                sa.setSpendPhyrexianMana(true);
+            }
+            return true;
         } finally {
             if (prior == null) sa.removeParam("AIPhyrexianPayment"); else sa.putParam("AIPhyrexianPayment", prior);
         }
