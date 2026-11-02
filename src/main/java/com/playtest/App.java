@@ -29,7 +29,7 @@ public final class App {
     static final class MatchSession {
         final String id; final String socketToken; volatile long tokenExpires; final String playerDeck; final String aiDeck; final String format;
         final Set<WsContext> sockets = ConcurrentHashMap.newKeySet();
-        volatile Process worker; volatile long emptySince; volatile String lastState; volatile String lastPrompt; final long created = System.currentTimeMillis();
+        volatile Process worker; volatile long emptySince; volatile String lastState; volatile String lastPrompt; volatile long lastSeen = System.currentTimeMillis(); final long created = System.currentTimeMillis();
         MatchSession(String id, String p, String a, String f) { this.id = id; socketToken = TransportAccess.newToken(); tokenExpires = System.currentTimeMillis() + 5 * 60_000; playerDeck = p; aiDeck = a; format = f; }
     }
     static final Map<String, MatchSession> MATCHES = new ConcurrentHashMap<>();
@@ -71,17 +71,18 @@ public final class App {
                 ctx.session.setIdleTimeout(java.time.Duration.ofMinutes(15));
                 synchronized (m) {
                     if (!m.sockets.isEmpty()) { ctx.closeSession(); return; }
-                    m.sockets.add(ctx);
+                    m.sockets.add(ctx); m.lastSeen = System.currentTimeMillis();
                 }
                 if (m.lastState != null) ctx.send(m.lastState);
                 if (m.lastPrompt != null) ctx.send(m.lastPrompt); // resend pending decision after reconnect
-                synchronized (m) { if (m.worker == null) start(m); }
+                if (m.worker == null) new Thread(() -> { synchronized (m) { if (m.worker == null) start(m); } }).start();
             });
             ws.onMessage(ctx -> {
                 MatchSession authenticated = MATCHES.get(ctx.pathParam("id"));
                 if (authenticated == null || !authenticated.sockets.contains(ctx)) { ctx.closeSession(); return; }
                 JsonNode msg = JSON.readTree(ctx.message());
                 String type = msg.path("type").asText("");
+                authenticated.lastSeen = System.currentTimeMillis();
                 if (type.equals("PING")) { ctx.send("{\"type\":\"PONG\"}"); return; }
                 MatchSession m = MATCHES.get(ctx.pathParam("id"));
                 if (type.equals("LEAVE")) { if (m != null) end(m); ctx.closeSession(); return; }
@@ -109,7 +110,8 @@ public final class App {
                 long now = System.currentTimeMillis();
                 MATCHES.values().removeIf(m -> {
                     // Two minutes covers a reconnect; unconnected sessions expire after 15.
-                    boolean dead = m.sockets.isEmpty() && (m.emptySince > 0 ? now - m.emptySince > 120_000 : now - m.created > 15 * 60_000);
+                    boolean dead = (m.sockets.isEmpty() && (m.emptySince > 0 ? now - m.emptySince > 120_000 : now - m.created > 15 * 60_000))
+                        || (m.worker != null && !m.worker.isAlive()) || abandoned(m, now);
                     if (dead && m.worker != null) m.worker.destroyForcibly();
                     return dead;
                 });
@@ -122,14 +124,34 @@ public final class App {
     static void end(MatchSession m) {
         MATCHES.remove(m.id);
         Process w = m.worker;
-        if (w != null && w.isAlive()) { w.descendants().forEach(ProcessHandle::destroyForcibly); w.destroyForcibly(); }
+        if (w != null && w.isAlive()) {
+            w.descendants().forEach(ProcessHandle::destroyForcibly); w.destroyForcibly();
+            try { w.waitFor(5, java.util.concurrent.TimeUnit.SECONDS); } catch (InterruptedException ignored) { Thread.currentThread().interrupt(); }
+        }
+        for (WsContext s : m.sockets) { try { s.closeSession(); } catch (Exception ignored) { } }
     }
+
+    /** Heartbeats arrive every 25s; a socket silent for 75s is a closed tab or dropped connection. */
+    static final long STALE_MS = 75_000;
+    static boolean abandoned(MatchSession m, long now) { return now - m.lastSeen > STALE_MS; }
+
+    static long running() { return MATCHES.values().stream().filter(x -> x.worker != null && x.worker.isAlive()).count(); }
 
     static void start(MatchSession m) {
         // Reclaim slots held by matches nobody is connected to before refusing a new one.
-        MATCHES.values().stream().filter(x -> x != m && x.sockets.isEmpty() && x.worker != null).toList().forEach(App::end);
-        long running = MATCHES.values().stream().filter(x -> x.worker != null && x.worker.isAlive()).count();
-        if (running >= MAX_MATCHES) { broadcast(m, "{\"type\":\"ERROR\",\"message\":\"Server busy, try again shortly\"}"); return; }
+        // Also reclaim matches whose browser went silent (closed tab, refresh, lost connection).
+        long now0 = System.currentTimeMillis();
+        MATCHES.values().stream().filter(x -> x != m && x.worker != null && (x.sockets.isEmpty() || abandoned(x, now0) || !x.worker.isAlive())).toList().forEach(App::end);
+        // Wait up to 30s for a slot instead of failing immediately.
+        long deadline = System.currentTimeMillis() + 30_000;
+        if (running() >= MAX_MATCHES) broadcast(m, "{\"type\":\"STATUS\",\"message\":\"Waiting for a free game table\"}");
+        while (running() >= MAX_MATCHES && System.currentTimeMillis() < deadline && !m.sockets.isEmpty()) {
+            try { Thread.sleep(2000); } catch (InterruptedException e) { return; }
+            long now = System.currentTimeMillis();
+            MATCHES.values().stream().filter(x -> x != m && x.worker != null && (x.sockets.isEmpty() || abandoned(x, now) || !x.worker.isAlive())).toList().forEach(App::end);
+        }
+        if (m.sockets.isEmpty()) return;
+        if (running() >= MAX_MATCHES) { broadcast(m, "{\"type\":\"ERROR\",\"message\":\"Server busy: another game is in progress\"}"); return; }
         try {
             Path job = Files.createTempDirectory("match-");
             Path a = job.resolve("player.dck"), b = job.resolve("ai.dck");

@@ -1,5 +1,10 @@
-# Companion Server v0.23
+# Companion Server v0.24
 
+
+## v0.24: stuck "server busy" recovery
+- Matches whose browser goes silent for 75s (closed tab, refresh, dropped connection) are reclaimed.
+- Ending a match waits for its worker to fully exit before a new one starts.
+- A new match waits up to 30s for a free table instead of failing immediately.
 ## v0.23: undo, targets and mana sources
 - Undo keeps its checkpoint across priority re-prompts, so the AI-match Undo button stays usable after casting or tapping.
 - Target and mana-source choices include tapped state and attached cards (e.g. Utopia Sprawl) so identical lands are distinguishable.
