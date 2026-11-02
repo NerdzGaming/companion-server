@@ -1,4 +1,14 @@
-# Companion Server v0.17
+# Companion Server v0.18
+
+## v0.18: colorless mana, library tops and human mana abilities
+- Colorless pool counts use ManaAtom.COLORLESS, not the card-characteristic MagicColor.COLORLESS; Sol Ring's two mana can now be displayed without changing Forge payment rules.
+- Snapshots expose only the library top authorized for the actual website viewer. Removing look permission, changing the top or shuffling recomputes visibility; hidden identities are not serialized.
+- Own visible library tops enter normal engine ability enumeration. Courser only permits legal lands; Future Sight permits engine-legal spells. Visibility alone never grants casting permission, and hidden libraries are never scanned.
+- Both explicit priority mana activations and selected payment sources pay through HumanCostDecision and resolve outside the stack. Discard/exile/sacrifice costs no longer bypass these prompts through ComputerUtil.playNoStack.
+- Matching website double-click and menus offer every engine-legal ability, including non-tap and loyalty options; multiple abilities ask which one. No manual tapping bypasses the engine.
+- Preserves v0.16 transport protection and v0.17 attack/loyalty/surveil support. Keep FORGE_TRANSPORT_SECRET unchanged.
+
+Deploy this package, publish the matching website and start a NEW match. Validate Sol Ring's two colorless mana, a cheaper spell leaving mana in the same step, Courser with land/nonland tops, Future Sight, permission loss/shuffle, loyalty and sacrifice-for-mana choices. Full pinned Forge compilation and live card-specific matches remain separate from source/API and website checks. Auto-tap, rare inherited choices and prompt-timeout fallbacks remain beta limitations.
 
 ## v0.17: planeswalkers and surveil
 - Attack choices include the engine's actual player, planeswalker and battle defenders, separately for each attacker. Invalid attacks re-prompt and engine attack requirements still apply.

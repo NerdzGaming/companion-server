@@ -94,12 +94,15 @@ public final class MatchWorker {
         s.put("phase", ph.getPhase() == null ? null : ph.getPhase().name());
         s.put("activePlayer", ph.getPlayerTurn() == null ? null : ph.getPlayerTurn().getName());
         List<Player> players = new ArrayList<>(game.getPlayers());
+        Player viewer = players.stream().filter(p -> p.getController() instanceof HumanBridgeController).findFirst().orElse(null);
         for (Player p : players) {
             Map<String, Object> side = new LinkedHashMap<>();
             side.put("life", p.getLife());
             side.put("manaPool", manaPool(p));
             side.put("handCount", p.getCardsIn(ZoneType.Hand).size());
             side.put("libraryCount", p.getCardsIn(ZoneType.Library).size());
+            Card top = visibleLibraryTop(p, viewer);
+            if (top != null) side.put("libraryTop", Map.of("id", top.getId(), "name", top.getName(), "typeLine", top.getType().toString()));
             side.put("battlefield", cards(p, ZoneType.Battlefield, true));
             side.put("graveyard", cards(p, ZoneType.Graveyard, false));
             side.put("exile", cards(p, ZoneType.Exile, false));
@@ -141,17 +144,21 @@ public final class MatchWorker {
 
     static String visibleName(Card c) { return c.isFaceDown() ? "Face-down card" : c.getName(); }
 
+    /** Owning a library does not reveal it. Inspect only its top and the actual website viewer. */
+    static Card visibleLibraryTop(Player owner, Player viewer) {
+        if (viewer == null) return null;
+        var library = owner.getCardsIn(ZoneType.Library);
+        if (library.isEmpty()) return null;
+        Card top = library.get(0);
+        return LibraryVisibility.allowed(top.getView().canBeShownTo(viewer.getView()),
+            top.getView().canFaceDownBeShownTo(viewer.getView())) ? top : null;
+    }
+
     /** Display only; leave individual mana objects, restrictions and provenance in Forge. */
     static List<Map<String, Object>> manaPool(Player p) {
         byte[] colors = { forge.card.MagicColor.WHITE, forge.card.MagicColor.BLUE,
-            forge.card.MagicColor.BLACK, forge.card.MagicColor.RED, forge.card.MagicColor.GREEN, forge.card.MagicColor.COLORLESS };
-        String[] labels = { "W", "U", "B", "R", "G", "C" };
-        List<Map<String, Object>> pool = new ArrayList<>();
-        for (int i = 0; i < colors.length; i++) {
-            int n = p.getManaPool().getAmountOfColor(colors[i]);
-            if (n > 0) pool.add(Map.of("color", labels[i], "amount", n));
-        }
-        return pool;
+            forge.card.MagicColor.BLACK, forge.card.MagicColor.RED, forge.card.MagicColor.GREEN, (byte) forge.card.mana.ManaAtom.COLORLESS };
+        return ManaPoolProjection.project(colors, color -> p.getManaPool().getAmountOfColor((byte) color));
     }
 
     static void emit(Object o) { try { out.println(JSON.writeValueAsString(o)); } catch (Exception ignored) { } }

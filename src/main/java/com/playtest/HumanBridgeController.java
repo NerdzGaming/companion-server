@@ -126,8 +126,12 @@ public final class HumanBridgeController extends PlayerControllerAi {
         Player me = getPlayer();
         while (true) {
             List<SpellAbility> playable = new ArrayList<>();
-            for (ZoneType z : ZONES) {
-                for (Card c : new ArrayList<>(me.getCardsIn(z))) {
+            List<Card> candidates = new ArrayList<>();
+            for (ZoneType z : ZONES) candidates.addAll(new ArrayList<>(me.getCardsIn(z)));
+            // Never enumerate the hidden library. Visibility is not play permission: canPlay still decides.
+            Card top = MatchWorker.visibleLibraryTop(me, me);
+            if (top != null) candidates.add(top);
+            for (Card c : candidates) {
                     try {
                         for (SpellAbility base : c.getAllPossibleAbilities(me, true)) {
                             base.setActivatingPlayer(me);
@@ -139,7 +143,6 @@ public final class HumanBridgeController extends PlayerControllerAi {
                             }
                         }
                     } catch (RuntimeException ignored) { }
-                }
             }
             // Always offer an explicit pass: do not advance the phase and drain floating mana silently.
             List<Map<String, Object>> options = new ArrayList<>();
@@ -180,7 +183,7 @@ public final class HumanBridgeController extends PlayerControllerAi {
             }
             if (!sa.canPlay()) continue;
             if (sa.isManaAbility()) {
-                if (ComputerUtil.playNoStack(me, sa, me.getGame(), false)) MatchWorker.recordManaAction(sa);
+                if (activateHumanMana(sa)) MatchWorker.recordManaAction(sa);
                 else MatchWorker.emit(Map.of("type", "NOTICE", "message", "Mana ability could not be activated."));
                 continue; // mana abilities do not use the stack; keep priority
             }
@@ -446,6 +449,19 @@ public final class HumanBridgeController extends PlayerControllerAi {
         return castWithHumanChoices(sa);
     }
 
+    /** Resolve mana outside the stack, but use human costs rather than ComputerUtil's AiCostDecision. */
+    private boolean activateHumanMana(SpellAbility sa) {
+        Player me = getPlayer();
+        sa.setActivatingPlayer(me);
+        if (!sa.isManaAbility() || !sa.canPlay() || !canPayHumanCost(sa.getPayCosts(), sa, false)) return false;
+        sa.resetPaidHash();
+        sa.setPaidLife(0);
+        CostPayment payment = new CostPayment(sa.getPayCosts(), sa);
+        if (!payment.payComputerCosts(new HumanCostDecision(me, sa, false))) return false;
+        AbilityUtils.resolve(sa);
+        return true;
+    }
+
     /** Adapted from pinned ComputerUtil.handlePlayingSpellAbility with a boolean choice boundary.
      * Rollback BEFORE payment on invalid targets; never fake a successful cast. */
     private boolean castWithHumanChoices(SpellAbility sa) {
@@ -518,7 +534,7 @@ public final class HumanBridgeController extends PlayerControllerAi {
                 if (!value.equals("m" + i)) continue;
                 SpellAbility ma = sources.get(i);
                 try {
-                    if (ma.canPlay() && ComputerUtil.playNoStack(me, ma, me.getGame(), false)) MatchWorker.recordManaAction(ma);
+                    if (activateHumanMana(ma)) MatchWorker.recordManaAction(ma);
                 } catch (RuntimeException ignored) {
                     MatchWorker.emit(Map.of("type", "NOTICE", "message", "That mana source could not be activated."));
                 }
