@@ -70,7 +70,8 @@ public final class App {
                 if (m == null || !TransportAccess.validTicket(ctx.queryParam("ticket"), m.socketToken, m.tokenExpires, System.currentTimeMillis())) { ctx.send("{\"type\":\"ERROR\",\"message\":\"Unknown match\"}"); ctx.closeSession(); return; }
                 ctx.session.setIdleTimeout(java.time.Duration.ofMinutes(15));
                 synchronized (m) {
-                    if (!m.sockets.isEmpty()) { ctx.closeSession(); return; }
+                    // A rejoining browser replaces its own stale socket (refresh leaves a half-open one).
+                    for (var old : new java.util.ArrayList<>(m.sockets)) { m.sockets.remove(old); try { old.closeSession(); } catch (Exception ignored) { } }
                     m.sockets.add(ctx); m.lastSeen = System.currentTimeMillis();
                 }
                 if (m.lastState != null) ctx.send(m.lastState);
@@ -99,7 +100,7 @@ public final class App {
             ws.onClose(ctx -> {
                 MatchSession m = MATCHES.get(ctx.pathParam("id"));
                 if (m != null) m.sockets.remove(ctx);
-                if (m != null && m.sockets.isEmpty()) { m.emptySince = System.currentTimeMillis(); m.tokenExpires = m.emptySince + 120_000; }
+                if (m != null && m.sockets.isEmpty()) { m.emptySince = System.currentTimeMillis(); m.tokenExpires = m.emptySince + REJOIN_MS; }
             });
         });
 
@@ -109,8 +110,8 @@ public final class App {
                 try { Thread.sleep(60_000); } catch (InterruptedException e) { return; }
                 long now = System.currentTimeMillis();
                 MATCHES.values().removeIf(m -> {
-                    // Two minutes covers a reconnect; unconnected sessions expire after 15.
-                    boolean dead = (m.sockets.isEmpty() && (m.emptySince > 0 ? now - m.emptySince > 120_000 : now - m.created > 15 * 60_000))
+                    // Five minutes allows rejoining after a refresh; unconnected sessions expire after 15.
+                    boolean dead = (m.sockets.isEmpty() && (m.emptySince > 0 ? now - m.emptySince > REJOIN_MS : now - m.created > 15 * 60_000))
                         || (m.worker != null && !m.worker.isAlive()) || abandoned(m, now);
                     if (dead && m.worker != null) m.worker.destroyForcibly();
                     return dead;
@@ -133,7 +134,13 @@ public final class App {
 
     /** Heartbeats arrive every 25s; a socket silent for 75s is a closed tab or dropped connection. */
     static final long STALE_MS = 75_000;
-    static boolean abandoned(MatchSession m, long now) { return now - m.lastSeen > STALE_MS; }
+    static final long REJOIN_MS = 5 * 60_000;
+    /** A disconnected game keeps its seat for rejoining, but yields after a minute if another player needs the table. */
+    static final long YIELD_MS = 60_000;
+    static boolean abandoned(MatchSession m, long now) { return !m.sockets.isEmpty() && now - m.lastSeen > STALE_MS; }
+    static boolean reclaimable(MatchSession m, long now) {
+        return abandoned(m, now) || !m.worker.isAlive() || (m.sockets.isEmpty() && m.emptySince > 0 && now - m.emptySince > YIELD_MS);
+    }
 
     static long running() { return MATCHES.values().stream().filter(x -> x.worker != null && x.worker.isAlive()).count(); }
 
@@ -141,14 +148,14 @@ public final class App {
         // Reclaim slots held by matches nobody is connected to before refusing a new one.
         // Also reclaim matches whose browser went silent (closed tab, refresh, lost connection).
         long now0 = System.currentTimeMillis();
-        MATCHES.values().stream().filter(x -> x != m && x.worker != null && (x.sockets.isEmpty() || abandoned(x, now0) || !x.worker.isAlive())).toList().forEach(App::end);
+        if (running() >= MAX_MATCHES) MATCHES.values().stream().filter(x -> x != m && x.worker != null && reclaimable(x, now0)).toList().forEach(App::end);
         // Wait up to 30s for a slot instead of failing immediately.
         long deadline = System.currentTimeMillis() + 30_000;
         if (running() >= MAX_MATCHES) broadcast(m, "{\"type\":\"STATUS\",\"message\":\"Waiting for a free game table\"}");
         while (running() >= MAX_MATCHES && System.currentTimeMillis() < deadline && !m.sockets.isEmpty()) {
             try { Thread.sleep(2000); } catch (InterruptedException e) { return; }
             long now = System.currentTimeMillis();
-            MATCHES.values().stream().filter(x -> x != m && x.worker != null && (x.sockets.isEmpty() || abandoned(x, now) || !x.worker.isAlive())).toList().forEach(App::end);
+            MATCHES.values().stream().filter(x -> x != m && x.worker != null && reclaimable(x, now)).toList().forEach(App::end);
         }
         if (m.sockets.isEmpty()) return;
         if (running() >= MAX_MATCHES) { broadcast(m, "{\"type\":\"ERROR\",\"message\":\"Server busy: another game is in progress\"}"); return; }

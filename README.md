@@ -1,5 +1,7 @@
-# Companion Server v0.28
+# Companion Server v0.29
 
+
+## v0.29: rejoin a game after refresh or leaving — a disconnected game stays open 5 minutes (yields after 1 minute if another player needs the table); a returning browser replaces its stale socket.
 ## v0.28: readable zone-change log lines for every card, real draws vs tutors, shuffles
 
 ## v0.27: MULTIPICK prompt for "one card of each type" effects (Atraxa); each pick logged
