@@ -131,7 +131,7 @@ public final class MatchWorker {
             }
             if (withState) { m.put("tapped", c.isTapped());
                 if (!c.isFaceDown() && c.isPlaneswalker()) m.put("loyalty", c.getCurrentLoyalty());
-                if (c.isCreature()) { m.put("power", c.getNetPower()); m.put("toughness", c.getNetToughness()); }
+                if (c.isCreature()) { m.put("power", c.getNetPower()); m.put("toughness", c.getNetToughness()); if (c.hasFirstStrike() || c.hasDoubleStrike()) m.put("firstStrike", true); }
                 if (c.getEntityAttachedTo() instanceof Card host) m.put("attachedTo", host.getId()); }
             list.add(m);
         }

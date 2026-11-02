@@ -1,4 +1,9 @@
-# Companion Server v0.24
+# Companion Server v0.26
+
+## v0.26: battlefield creatures report firstStrike (first or double strike)
+
+## v0.25: mulligan prompt says who goes first (onThePlay, firstPlayer)
+
 
 
 ## v0.24: stuck "server busy" recovery

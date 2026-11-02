@@ -216,7 +216,10 @@ public final class HumanBridgeController extends PlayerControllerAi {
     public boolean mulliganKeepHand(Player firstPlayer, int cardsToReturn) {
         List<Map<String, Object>> hand = new ArrayList<>();
         for (Card c : getPlayer().getCardsIn(ZoneType.Hand)) hand.add(card(c));
-        JsonNode a = ask("MULLIGAN", Map.of("hand", hand, "cardsToReturn", cardsToReturn));
+        // v0.25: tell the player who goes first before keep/mulligan, for pregame effects and play/draw decisions.
+        boolean onPlay = firstPlayer == null || firstPlayer.equals(getPlayer());
+        String firstName = firstPlayer == null ? "" : firstPlayer.getName();
+        JsonNode a = ask("MULLIGAN", Map.of("hand", hand, "cardsToReturn", cardsToReturn, "onThePlay", onPlay, "firstPlayer", firstName));
         boolean keep = a == null ? super.mulliganKeepHand(firstPlayer, cardsToReturn) : a.path("keep").asBoolean(true);
         if (keep) settleDeferredTuck();
         else deferredTuck = 0; // the whole hand is shuffled away; nothing to bottom from it
