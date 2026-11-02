@@ -150,3 +150,6 @@ artwork is loaded by the website separately.
 
 ## v0.9
 - London mulligan: every mulligan shows a fresh seven; you choose cards to bottom only once, after you keep (CR 103.5).
+
+## v0.19
+- Undo: before each of your priority prompts the engine checkpoints the game (Forge UndoManager). Answering a priority prompt with `{"undo": true}` restores the previous checkpoint; draws, reveals, randomness and opponent actions remain engine barriers. Prompts include `canUndo`.

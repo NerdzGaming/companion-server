@@ -124,6 +124,10 @@ public final class HumanBridgeController extends PlayerControllerAi {
     @Override
     public List<SpellAbility> chooseSpellAbilityToPlay() {
         Player me = getPlayer();
+        // Same checkpoint Forge's desktop client takes before each priority prompt; barriers (draws, reveals, opponent actions) stay engine-owned.
+        forge.game.undo.UndoManager undo = me.getGame().getUndoManager();
+        undo.setMode(forge.game.undo.UndoManager.Mode.FREE);
+        undo.checkpoint(me.getGame(), me);
         while (true) {
             List<SpellAbility> playable = new ArrayList<>();
             List<Card> candidates = new ArrayList<>();
@@ -162,8 +166,15 @@ public final class HumanBridgeController extends PlayerControllerAi {
             var ph = getPlayer().getGame().getPhaseHandler();
             JsonNode a = ask("PRIORITY", Map.of("options", options,
                 "phase", ph.getPhase() == null ? "" : ph.getPhase().name(),
-                "stackSize", getPlayer().getGame().getStack().size()));
+                "stackSize", getPlayer().getGame().getStack().size(),
+                "canUndo", undo.canUndo(me)));
             if (a == null) return super.chooseSpellAbilityToPlay();
+            if (a.path("undo").asBoolean(false)) {
+                if (undo.canUndo(me) && undo.undo(me.getGame())) return java.util.Collections.emptyList(); // engine re-prompts from the restored state
+                String why = undo.whyNot();
+                MatchWorker.emit(Map.of("type", "NOTICE", "message", "Nothing to undo" + (why == null ? "." : ": " + why + ".")));
+                continue;
+            }
             if (!a.has("index") || a.path("index").isNull()) return null; // pass
             int idx = a.path("index").asInt(-1);
             if (idx < 0 || idx >= playable.size()) return null;
