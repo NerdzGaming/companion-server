@@ -1,4 +1,6 @@
-# Companion Server v0.27
+# Companion Server v0.28
+
+## v0.28: readable zone-change log lines for every card, real draws vs tutors, shuffles
 
 ## v0.27: MULTIPICK prompt for "one card of each type" effects (Atraxa); each pick logged
 

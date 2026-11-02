@@ -387,6 +387,47 @@ public final class HumanBridgeController extends PlayerControllerAi {
         return out;
     }
 
+    /**
+     * v0.27: "for each card type, choose a card" (Atraxa, DigMultiple). Shows every revealed card at once with one
+     * slot per type; each card fills at most one slot. Validated server-side, then each pick is logged separately.
+     */
+    @Override
+    public CardCollection chooseCardsForEffectMultiple(Map<String, CardCollection> validMap, SpellAbility sa, String title, boolean isOptional) {
+        Map<Integer, Card> all = new LinkedHashMap<>();
+        List<Map<String, Object>> groups = new ArrayList<>();
+        for (Map.Entry<String, CardCollection> g : validMap.entrySet()) {
+            List<Integer> ids = new ArrayList<>();
+            for (Card c : g.getValue()) { all.putIfAbsent(c.getId(), c); ids.add(c.getId()); }
+            groups.add(Map.of("key", g.getKey(), "label", g.getKey(), "cardIds", ids));
+        }
+        List<Map<String, Object>> cards = new ArrayList<>();
+        for (Card c : all.values()) { Map<String, Object> m = card(c); m.put("typeLine", c.getType().toString()); cards.add(m); }
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("title", title == null ? "" : title); body.put("source", src(sa)); body.put("optional", isOptional);
+        body.put("groups", groups); body.put("cards", cards);
+        while (true) {
+            JsonNode a = ask("MULTIPICK", body);
+            if (a == null) return super.chooseCardsForEffectMultiple(validMap, sa, title, isOptional);
+            CardCollection out = new CardCollection();
+            Map<String, Card> byGroup = new LinkedHashMap<>();
+            boolean ok = true;
+            JsonNode picks = a.path("picks");
+            for (Map.Entry<String, CardCollection> g : validMap.entrySet()) {
+                JsonNode v = picks.path(g.getKey());
+                if (v.isMissingNode() || v.isNull()) continue;
+                Card c = all.get(v.asInt(-1));
+                if (c == null || !g.getValue().contains(c) || out.contains(c)) { ok = false; break; }
+                out.add(c); byGroup.put(g.getKey(), c);
+            }
+            if (ok && (isOptional || !out.isEmpty())) {
+                if (MatchWorker.actionLog != null)
+                    for (Map.Entry<String, Card> e : byGroup.entrySet()) MatchWorker.actionLog.revealedPick(getPlayer().getName(), e.getValue().getName(), e.getKey());
+                return out;
+            }
+            MatchWorker.emit(Map.of("type", "NOTICE", "message", "That selection is not valid. Each card can fill only one type. Please choose again."));
+        }
+    }
+
     /** Asks the player to pick between min and max of the options; null = no valid answer (caller falls back to AI). */
     private <T> List<T> pick(String kind, String title, SpellAbility sa, List<T> options, int min, int max) {
         List<Map<String, Object>> opts = new ArrayList<>();
