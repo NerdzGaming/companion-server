@@ -1,4 +1,6 @@
-# Companion Server v0.26
+# Companion Server v0.27
+
+## v0.27: MULTIPICK prompt for "one card of each type" effects (Atraxa); each pick logged
 
 ## v0.26: battlefield creatures report firstStrike (first or double strike)
 
