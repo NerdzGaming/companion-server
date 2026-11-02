@@ -101,7 +101,7 @@ Use pool and Tap selected & pay allow Forge to auto-tap any unpaid shortfall.
 Non-mana additional costs, some mana-color/X choices, divided targeting, complex
 modal/additional ability cases and other unoverridden decisions can still use AI.
 The printed Pay cost is informational; Forge applies actual cost adjustments.
-Unanswered prompts default to AI after PROMPT_TIMEOUT_MIN (default 5 minutes).
+Unanswered prompts default to AI after PROMPT_TIMEOUT_MIN (default 15 minutes).
 No general Cancel casting control is offered. The v0.7 cast adapter consumes
 target failure before payment and uses Forge rollback for rejected spells.
 Complex additional-cost rollback and splice behavior still need live testing.
@@ -153,3 +153,11 @@ artwork is loaded by the website separately.
 
 ## v0.19
 - Undo: before each of your priority prompts the engine checkpoints the game (Forge UndoManager). Answering a priority prompt with `{"undo": true}` restores the previous checkpoint; draws, reveals, randomness and opponent actions remain engine barriers. Prompts include `canUndo`.
+
+## v0.21
+- Default prompt timeout raised to 15 minutes (PROMPT_TIMEOUT_MIN still overrides).
+
+## v0.20
+- Triggered abilities (enters-the-battlefield and others) ask you for targets and "you may" confirmations instead of Forge AI choosing.
+- Return-a-permanent costs (e.g. Quirion Ranger) let you pick which permanent to return.
+- X costs on spells and abilities ask for a value (capped by available mana).

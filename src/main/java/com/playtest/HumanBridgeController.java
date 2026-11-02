@@ -18,6 +18,8 @@ import forge.game.cost.CostDecisionMakerBase;
 import forge.game.cost.CostDiscard;
 import forge.game.cost.CostExile;
 import forge.game.cost.CostSacrifice;
+import forge.game.cost.CostReturn;
+import forge.game.trigger.WrappedAbility;
 import forge.game.cost.CostPartMana;
 import forge.game.cost.PaymentDecision;
 import forge.game.mana.ManaConversionMatrix;
@@ -66,7 +68,7 @@ import org.apache.commons.lang3.tuple.ImmutablePair;
  * rarely used choices still fall back to Forge AI. No answer within the timeout = AI decides.
  */
 public final class HumanBridgeController extends PlayerControllerAi {
-    static final long TIMEOUT_MIN = Long.parseLong(System.getenv().getOrDefault("PROMPT_TIMEOUT_MIN", "5"));
+    static final long TIMEOUT_MIN = Long.parseLong(System.getenv().getOrDefault("PROMPT_TIMEOUT_MIN", "15"));
     static final LinkedBlockingQueue<JsonNode> INBOX = new LinkedBlockingQueue<>();
     static final AtomicInteger SEQ = new AtomicInteger();
     static final ZoneType[] ZONES = { ZoneType.Hand, ZoneType.Battlefield, ZoneType.Command, ZoneType.Graveyard, ZoneType.Exile };
@@ -553,6 +555,72 @@ public final class HumanBridgeController extends PlayerControllerAi {
         }
     }
 
+    // ---------- v0.20: triggered abilities (ETB etc.) and X announcements are the player's call ----------
+
+    private static boolean chainTargets(SpellAbility sa) {
+        for (SpellAbility c = sa; c != null; c = c.getSubAbility()) if (c.usesTargeting()) return true;
+        return false;
+    }
+
+    /** True when this bridge should pick for the trigger itself instead of Forge AI's doTrigger. */
+    private boolean humanTrigger(SpellAbility sa) {
+        return sa.getApi() != ApiType.Charm && !sa.hasParam("TargetingPlayer")
+            && (chainTargets(sa) || sa.isOptionalTrigger());
+    }
+
+    /** Optional "you may" confirm, then human targets. False = trigger is not put on the stack. */
+    private boolean prepareHumanTrigger(SpellAbility sa) {
+        sa.setActivatingPlayer(getPlayer());
+        if (sa.isOptionalTrigger()) {
+            JsonNode a = ask("CONFIRM", Map.of("source", src(sa), "message", "Use triggered ability: " + sa.getStackDescription() + "?"));
+            if (a != null && !a.path("yes").asBoolean(false)) return false;
+        }
+        if (!chainTargets(sa)) return true;
+        return humanTargets(sa);
+    }
+
+    @Override
+    public void orderAndPlaySimultaneousSa(List<SpellAbility> activePlayerSAs) {
+        for (SpellAbility sa : orderSimultaneousSa(activePlayerSAs)) {
+            if (sa.isTrigger() && !sa.isCopied() && humanTrigger(sa)) {
+                if (prepareHumanTrigger(sa)) ComputerUtil.playStack(sa, getPlayer(), getGame());
+            } else {
+                super.orderAndPlaySimultaneousSa(new ArrayList<>(List.of(sa)));
+            }
+        }
+    }
+
+    @Override
+    public boolean playTrigger(Card host, WrappedAbility wrapperAbility, boolean isMandatory) {
+        if (!humanTrigger(wrapperAbility)) return super.playTrigger(host, wrapperAbility, isMandatory);
+        if (!prepareHumanTrigger(wrapperAbility)) return false;
+        return ComputerUtil.playNoStack(wrapperAbility.getActivatingPlayer(), wrapperAbility, getGame(), true);
+    }
+
+    /** X and other announced values: ask with a +/- number picker capped by what can actually be paid. */
+    @Override
+    public Integer announceRequirements(SpellAbility ability, int min, int max, String announce) {
+        int cap = max;
+        if ("X".equals(announce)) {
+            Cost cost = ability.getPayCosts();
+            Integer nonMana = cost == null ? null : cost.getMaxForNonManaX(ability, getPlayer(), false);
+            if (nonMana != null) cap = Math.min(cap, nonMana);
+            else {
+                int mana = ComputerUtilMana.getAvailableManaEstimate(getPlayer(), false) + getPlayer().getManaPool().totalMana();
+                cap = Math.min(cap, Math.max(min, mana));
+            }
+        }
+        cap = Math.min(cap, 99);
+        if (min > cap) return null;
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("source", src(ability)); body.put("title", "Choose a value for " + announce);
+        body.put("min", min); body.put("max", cap);
+        JsonNode a = ask("NUMBER", body);
+        if (a == null) return super.announceRequirements(ability, min, max, announce);
+        int v = a.path("value").asInt(min);
+        return Math.max(min, Math.min(cap, v));
+    }
+
     @Override
     public boolean chooseTargetsFor(SpellAbility currentAbility) {
         if (!currentAbility.usesTargeting()) return super.chooseTargetsFor(currentAbility);
@@ -915,6 +983,14 @@ public final class HumanBridgeController extends PlayerControllerAi {
             CardCollectionView pool = cost.zoneRestriction != 1 ? player.getGame().getCardsIn(cost.getFrom()) : player.getCardsIn(cost.getFrom());
             CardCollectionView valid = CardLists.getValidCards(pool, type.split(";"), player, source, ability);
             return choose("Exile", valid, c, null);
+        }
+
+        @Override
+        public PaymentDecision visit(CostReturn cost) {
+            if (cost.payCostFromSource()) return super.visit(cost);
+            int c = cost.getAbilityAmount(ability);
+            CardCollectionView valid = CardLists.getValidCards(player.getCardsIn(ZoneType.Battlefield), cost.getType().split(";"), player, source, ability);
+            return choose("Return", valid, c, null);
         }
 
         @Override
