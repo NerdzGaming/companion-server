@@ -130,7 +130,8 @@ public final class HumanBridgeController extends PlayerControllerAi {
         // Same checkpoint Forge's desktop client takes before each priority prompt; barriers (draws, reveals, opponent actions) stay engine-owned.
         forge.game.undo.UndoManager undo = me.getGame().getUndoManager();
         undo.setMode(forge.game.undo.UndoManager.Mode.FREE);
-        undo.checkpoint(me.getGame(), me);
+        // v0.23: keep the existing checkpoint while it still holds undoable actions, so Undo stays live across re-prompts.
+        if (!undo.canUndo(me)) undo.checkpoint(me.getGame(), me);
         while (true) {
             List<SpellAbility> playable = new ArrayList<>();
             List<Card> candidates = new ArrayList<>();
@@ -358,6 +359,10 @@ public final class HumanBridgeController extends PlayerControllerAi {
             m.put("controller", c.getController() == getPlayer() ? "you" : "opponent");
             m.put("zone", c.getZone() == null ? null : c.getZone().getZoneType().name());
             if (c.isCreature()) { m.put("power", c.getNetPower()); m.put("toughness", c.getNetToughness()); }
+            if (c.isInPlay()) m.put("tapped", c.isTapped());
+            List<String> attached = new ArrayList<>();
+            try { for (Card a : c.getAttachedCards()) attached.add(a.getName()); } catch (RuntimeException ignored) { }
+            if (!attached.isEmpty()) m.put("attached", attached);
         } else if (o instanceof SpellAbility ability) {
             m.put("kind", "other"); m.put("zone", "Stack");
             m.put("label", MatchWorker.visibleName(ability.getHostCard()) + " — " + (ability.getHostCard().isFaceDown() ? "Face-down spell" : ability.toUnsuppressedString()));
@@ -556,6 +561,13 @@ public final class HumanBridgeController extends PlayerControllerAi {
             String d = ma.getDescription();
             boolean multi = ma.getHostCard().getManaAbilities().size() > 1;
             m.put("label", ma.getHostCard().getName() + (multi && d != null && !d.isBlank() ? " — " + d : ""));
+            try { if (ma.getManaPart() != null) m.put("produces", ma.getManaPart().getOrigProduced()); } catch (RuntimeException ignored) { }
+            try {
+                Cost pc = ma.getPayCosts();
+                if (pc != null && pc.hasManaCost()) m.put("extraCost", pc.toSimpleString()); // e.g. Nykthos {2},{T}
+            } catch (RuntimeException ignored) { }
+            if (d != null && !d.isBlank()) m.put("text", d);
+            if (protectedTargets(sa).contains(ma.getHostCard())) m.put("targeted", true);
             opts.add(m);
         }
         List<Map<String, Object>> shards = new ArrayList<>();
@@ -1056,7 +1068,7 @@ public final class HumanBridgeController extends PlayerControllerAi {
         String prior = sa.getParam("AIPhyrexianPayment");
         sa.putParam("AIPhyrexianPayment", "Never");
         try {
-            boolean paid = being.isPaid() || ComputerUtilMana.payManaCost(being, sa, me, effect);
+            boolean paid = being.isPaid() || payAvoidingTargets(being, sa, me, effect);
             if (!paid) return false;
             if (life > 0) {
                 if (!me.payLife(life, sa, effect)) return false;
@@ -1066,5 +1078,28 @@ public final class HumanBridgeController extends PlayerControllerAi {
         } finally {
             if (prior == null) sa.removeParam("AIPhyrexianPayment"); else sa.putParam("AIPhyrexianPayment", prior);
         }
+    }
+
+    /** Cards this spell targets on the battlefield (e.g. Utopia Sprawl's land), which auto-pay should leave untapped. */
+    private static List<Card> protectedTargets(SpellAbility sa) {
+        List<Card> out = new ArrayList<>();
+        try {
+            for (SpellAbility c = sa; c != null; c = c.getSubAbility())
+                if (c.getTargets() != null) for (Card t : c.getTargets().getTargetCards()) if (t.isInPlay() && !t.isTapped()) out.add(t);
+        } catch (RuntimeException ignored) { }
+        return out;
+    }
+
+    /** v0.23: auto-pay first tries without tapping the spell's own targets, then falls back to any source. */
+    private static boolean payAvoidingTargets(ManaCostBeingPaid being, SpellAbility sa, Player me, boolean effect) {
+        List<Card> held = protectedTargets(sa);
+        if (held.isEmpty()) return ComputerUtilMana.payManaCost(being, sa, me, effect);
+        for (Card c : held) c.setTapped(true);
+        boolean canWithout;
+        try { canWithout = ComputerUtilMana.canPayManaCost(new Cost(being.toManaCost(), effect), sa, me, 0, effect); }
+        catch (RuntimeException e) { canWithout = false; }
+        if (!canWithout) { for (Card c : held) c.setTapped(false); return ComputerUtilMana.payManaCost(being, sa, me, effect); }
+        try { return ComputerUtilMana.payManaCost(being, sa, me, effect); }
+        finally { for (Card c : held) c.setTapped(false); }
     }
 }

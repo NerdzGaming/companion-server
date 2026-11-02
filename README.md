@@ -1,4 +1,11 @@
-# Companion Server v0.22
+# Companion Server v0.23
+
+## v0.23: undo, targets and mana sources
+- Undo keeps its checkpoint across priority re-prompts, so the AI-match Undo button stays usable after casting or tapping.
+- Target and mana-source choices include tapped state and attached cards (e.g. Utopia Sprawl) so identical lands are distinguishable.
+- Mana sources report produced mana, extra activation costs (Nykthos {2}) and whether the source is the spell's own target.
+- Auto-pay avoids tapping the spell's own battlefield targets when another way to pay exists.
+
 
 ## v0.22: X and Phyrexian payment
 - Human spells and activated mana/non-mana abilities announce X before targets and costs, matching the pinned PlaySpellAbility lifecycle. Copies and fixed X definitions are preserved.
