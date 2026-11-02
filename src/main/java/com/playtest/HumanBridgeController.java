@@ -2,6 +2,7 @@ package com.playtest;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import forge.ai.ComputerUtilMana;
+import java.util.HashMap;
 import forge.ai.PlayerControllerAi;
 import forge.game.Game;
 import forge.game.GameEntity;
@@ -762,9 +763,26 @@ public final class HumanBridgeController extends PlayerControllerAi {
             Integer nonMana = cost.getMaxForNonManaX(ability, getPlayer(), false);
             if (nonMana != null) cap = Math.min(cap, nonMana);
         }
-        if (min > cap) return null;
+        Map<String, Object> body = new HashMap<>();
+        if ("X".equalsIgnoreCase(announce) && cost != null && cost.hasManaCost()) {
+            CostPartMana part = cost.getCostMana();
+            int per = part == null ? 1 : Math.max(1, part.getAmountOfX());
+            int afford = Integer.MAX_VALUE;
+            try { afford = Math.max(0, ComputerUtilMana.determineLeftoverMana(ability, getPlayer(), false)) / per; }
+            catch (RuntimeException ignored) { }
+            if (afford != Integer.MAX_VALUE) cap = Math.min(cap, afford);
+            body.put("x", true);
+            body.put("perX", per);
+            body.put("baseCost", part == null ? "" : part.getMana().getShortString());
+            body.put("affordable", cap);
+        }
+        if (min > cap) {
+            MatchWorker.emit(Map.of("type", "NOTICE", "message", "You can't produce enough mana for the minimum X."));
+            return null;
+        }
+        body.put("source", src(ability)); body.put("title", "Choose a value for " + announce); body.put("min", min); body.put("max", cap);
         while (true) {
-            JsonNode a = ask("NUMBER", Map.of("source", src(ability), "title", "Choose a value for " + announce, "min", min, "max", cap));
+            JsonNode a = ask("NUMBER", body);
             if (a == null) return super.announceRequirements(ability, min, cap, announce);
             JsonNode value = a.path("value");
             if (value.isIntegralNumber() && value.canConvertToInt() && value.asInt() >= min && value.asInt() <= cap) return value.asInt();

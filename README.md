@@ -1,5 +1,7 @@
-# Companion Server v0.30
+# Companion Server v0.31
 
+
+## v0.31: X choices are capped at what your untapped sources and pool can actually pay; the prompt sends cost-per-X and base cost.
 
 ## v0.30: blocks are checked for evasion (flying, reach, menace) with legal pairs sent to the table; name-a-card effects (Demonic Consultation) ask you; full stack entries with controller, targets and copies plus the storm count.
 
