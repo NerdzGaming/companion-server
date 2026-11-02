@@ -111,9 +111,27 @@ public final class MatchWorker {
             if (p.getName().equals("player")) side.put("hand", cards(p, ZoneType.Hand, false));
             s.put(p.getName(), side);
         }
-        List<String> stack = new ArrayList<>();
-        game.getStack().forEach(si -> stack.add(visibleName(si.getSpellAbility().getHostCard())));
+        // v0.30: full stack entries (top first in engine order) so the table can show the whole card, its controller and targets.
+        List<Map<String, Object>> stack = new ArrayList<>();
+        game.getStack().forEach(si -> {
+            var sa = si.getSpellAbility();
+            Card host = sa.getHostCard();
+            Map<String, Object> e = new LinkedHashMap<>();
+            e.put("id", si.getId());
+            e.put("cardId", host == null ? -1 : host.getId());
+            e.put("name", host == null ? "Ability" : visibleName(host));
+            e.put("controller", si.getActivatingPlayer() == null ? "" : si.getActivatingPlayer().getName());
+            e.put("spell", sa.isSpell());
+            e.put("copy", sa.isCopied() || (host != null && host.isCopiedSpell()));
+            String text = si.getStackDescription();
+            e.put("text", text == null ? "" : text);
+            List<String> targets = new ArrayList<>();
+            try { for (var t : sa.getAllTargetChoices()) for (var o : t) targets.add(o instanceof Card tc ? visibleName(tc) : String.valueOf(o)); } catch (RuntimeException ignored) { }
+            e.put("targets", targets);
+            stack.add(e);
+        });
         s.put("stack", stack);
+        try { s.put("stormCount", game.getStack().getSpellsCastThisTurn().size()); } catch (RuntimeException ignored) { }
         s.put("actionLog", actionLog == null ? List.of() : actionLog.snapshot());
         return s;
     }

@@ -335,13 +335,71 @@ public final class HumanBridgeController extends PlayerControllerAi {
         List<Map<String, Object>> at = new ArrayList<>(), bl = new ArrayList<>();
         for (Card c : attackers) at.add(card(c));
         for (Card c : blockers) bl.add(card(c));
-        JsonNode a = ask("BLOCK", Map.of("attackers", at, "blockers", bl));
+        // v0.30: tell the table exactly which attackers each creature may legally block (flying, reach, menace, etc.).
+        Map<String, List<Integer>> legal = new LinkedHashMap<>();
+        for (Card b : blockers) {
+            List<Integer> ok = new ArrayList<>();
+            for (Card atk : attackers) if (legalBlock(atk, b, combat)) ok.add(atk.getId());
+            legal.put(String.valueOf(b.getId()), ok);
+        }
+        JsonNode a = ask("BLOCK", Map.of("attackers", at, "blockers", bl, "legal", legal));
         if (a == null) { super.declareBlockers(defender, combat); return; }
+        List<String> refused = new ArrayList<>();
         for (JsonNode b : a.path("blocks")) {
             Card blk = null, atk = null;
             for (Card c : blockers) if (c.getId() == b.path("blocker").asInt()) blk = c;
             for (Card c : attackers) if (c.getId() == b.path("attacker").asInt()) atk = c;
-            if (blk != null && atk != null && CombatUtil.canBlock(atk, blk, combat)) combat.addBlocker(atk, blk);
+            if (blk == null || atk == null) continue;
+            if (legalBlock(atk, blk, combat)) combat.addBlocker(atk, blk);
+            else refused.add(blk.getName() + " can't block " + atk.getName());
+        }
+        if (!refused.isEmpty()) MatchWorker.emit(Map.of("type", "NOTICE", "message", String.join("; ", refused) + "."));
+    }
+
+    /** Evasion (flying, shadow, landwalk, "can't be blocked except by") plus combat limits; both checks must pass. */
+    private static boolean legalBlock(Card attacker, Card blocker, Combat combat) {
+        try {
+            return CombatUtil.canBlock(blocker, combat) && CombatUtil.canBlock(attacker, blocker) && CombatUtil.canBlock(attacker, blocker, combat);
+        } catch (RuntimeException e) { return false; }
+    }
+
+    /** Demonic Consultation and other "name a card": the player names any card the effect allows, validated here. */
+    @Override
+    public String chooseCardName(SpellAbility sa, java.util.function.Predicate<forge.card.ICardFace> cpp, String valid, String message) {
+        List<String> allowed = new ArrayList<>();
+        for (forge.card.ICardFace face : forge.StaticData.instance().getCommonCards().getAllFaces()) {
+            try { if (cpp == null || cpp.test(face)) allowed.add(face.getName()); } catch (RuntimeException ignored) { }
+        }
+        String got = askCardName(sa, message, allowed);
+        return got != null ? got : super.chooseCardName(sa, cpp, valid, message);
+    }
+
+    @Override
+    public String chooseCardName(SpellAbility sa, List<forge.card.ICardFace> faces, String message) {
+        List<String> allowed = new ArrayList<>();
+        for (forge.card.ICardFace f : faces) allowed.add(f.getName());
+        String got = askCardName(sa, message, allowed);
+        return got != null ? got : super.chooseCardName(sa, faces, message);
+    }
+
+    private String askCardName(SpellAbility sa, String message, List<String> allowed) {
+        if (allowed.isEmpty()) return null;
+        Map<String, String> byLower = new java.util.HashMap<>();
+        for (String n : allowed) byLower.putIfAbsent(n.toLowerCase(java.util.Locale.ROOT), n);
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("source", src(sa));
+        body.put("message", message == null || message.isBlank() ? "Name a card" : message);
+        // Small lists (e.g. "name a creature card in your deck") are sent whole; open lists use card search on the website.
+        if (allowed.size() <= 400) body.put("names", new ArrayList<>(new java.util.TreeSet<>(allowed)));
+        else body.put("total", allowed.size());
+        while (true) {
+            JsonNode a = ask("NAME", body);
+            if (a == null) return null;
+            String n = a.path("name").asText("").trim();
+            String exact = byLower.get(n.toLowerCase(java.util.Locale.ROOT));
+            if (exact == null && n.contains(" // ")) exact = byLower.get(n.split(" // ")[0].toLowerCase(java.util.Locale.ROOT));
+            if (exact != null) return exact;
+            MatchWorker.emit(Map.of("type", "NOTICE", "message", "\"" + n + "\" isn't a card this effect lets you name. Choose again."));
         }
     }
 

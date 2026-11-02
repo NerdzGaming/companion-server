@@ -1,5 +1,7 @@
-# Companion Server v0.29
+# Companion Server v0.30
 
+
+## v0.30: blocks are checked for evasion (flying, reach, menace) with legal pairs sent to the table; name-a-card effects (Demonic Consultation) ask you; full stack entries with controller, targets and copies plus the storm count.
 
 ## v0.29: rejoin a game after refresh or leaving — a disconnected game stays open 5 minutes (yields after 1 minute if another player needs the table); a returning browser replaces its stale socket.
 ## v0.28: readable zone-change log lines for every card, real draws vs tutors, shuffles
