@@ -27,7 +27,7 @@ public final class App {
     static final int MAX_MATCHES = Integer.parseInt(System.getenv().getOrDefault("MAX_MATCHES", "1"));
 
     static final class MatchSession {
-        final String id; final String socketToken; volatile long tokenExpires; final String playerDeck; final String aiDeck; final String format;
+        final String id; final String socketToken; volatile long tokenExpires; final String playerDeck; final String aiDeck; final String format; String strategy = "{}";
         final Set<WsContext> sockets = ConcurrentHashMap.newKeySet();
         volatile Process worker; volatile long emptySince; volatile String lastState; volatile String lastPrompt; volatile long lastSeen = System.currentTimeMillis(); final long created = System.currentTimeMillis();
         MatchSession(String id, String p, String a, String f) { this.id = id; socketToken = TransportAccess.newToken(); tokenExpires = System.currentTimeMillis() + 5 * 60_000; playerDeck = p; aiDeck = a; format = f; }
@@ -53,6 +53,9 @@ public final class App {
             }
             String id = UUID.randomUUID().toString();
             MatchSession m = new MatchSession(id, p, a, format);
+            String strategy = JSON.writeValueAsString(body.path("strategy"));
+            if (strategy.length() > 1_000_000) { ctx.status(400).json(Map.of("error", "Strategy payload too large")); return; }
+            m.strategy = strategy;
             MATCHES.put(id, m);
             ctx.header("Cache-Control", "no-store");
             ctx.json(Map.of("matchId", id, "socketToken", m.socketToken, "status", "created"));
@@ -163,11 +166,12 @@ public final class App {
             Path job = Files.createTempDirectory("match-");
             Path a = job.resolve("player.dck"), b = job.resolve("ai.dck");
             Files.writeString(a, m.playerDeck); Files.writeString(b, m.aiDeck);
+            Path strategy = job.resolve("strategy.json"); Files.writeString(strategy, m.strategy);
             String workerCp = System.getenv().getOrDefault("WORKER_CP", "/app/server.jar:/app/forge/forge-headless.jar:/app/lib/*");
             List<String> cmd = List.of(Path.of(System.getProperty("java.home"), "bin", "java").toString(),
                 "-Xmx" + System.getenv().getOrDefault("WORKER_HEAP", "1200m"), "-Djava.awt.headless=true", "-Duser.home=" + job,
                 "--add-opens=java.base/java.lang=ALL-UNNAMED", "--add-opens=java.base/java.util=ALL-UNNAMED",
-                "-cp", workerCp, MatchWorker.class.getName(), a.toString(), b.toString(), m.format);
+                "-cp", workerCp, MatchWorker.class.getName(), a.toString(), b.toString(), m.format, strategy.toString());
             m.worker = new ProcessBuilder(cmd).redirectError(ProcessBuilder.Redirect.INHERIT).start();
             broadcast(m, "{\"type\":\"STATUS\",\"message\":\"Forge is loading cards (about 30-60s)\"}");
             Thread relay = new Thread(() -> {

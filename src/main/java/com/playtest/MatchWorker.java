@@ -58,6 +58,10 @@ public final class MatchWorker {
         Match match = new Match(rules, List.of(pa, pb), "Nerdz rules match");
         Game game = match.createGame();
         game.setNoGUIUser();
+        if (args.length > 3) {
+            OpponentStrategy strategy = new OpponentStrategy(JSON.readTree(Path.of(args[3]).toFile()));
+            forge.ai.NerdzStrategy.install(strategy::bonus);
+        }
         actionLog = new PublicActionLog(game);
         game.subscribeToEvents(actionLog);
         emit(Map.of("type", "STATUS", "message", "Game started"));

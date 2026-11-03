@@ -1,4 +1,13 @@
-# Companion Server v0.31
+# Companion Server v0.32
+
+## v0.32: catalog-aware opponent strategy
+- The website supplies the same Combo Finder feeds, matching complete combos in the AI deck, current Scryfall Game Changer flags and available USD prices.
+- The pinned Forge source receives seven fail-closed scoring hooks: creature/combat valuation, noncreature removal, permanent selection/preservation, cast ordering, and simulation permanent/land evaluation. Forge still chooses legal actions and resolves all rules.
+- Combo pieces gain contextual value as pieces become available. Opposing combos use face-up battlefield information only; opponent hand/library contents and deck lists are not inspected. Human priority/cost choices keep baseline evaluation.
+- Game Changer bonus is 85; price adds at most 8, never replacing tactical strength. Price is name-level Scryfall USD reference metadata, not exact-printing/store valuation. Missing prices remain unknown.
+- This improves recognition/protection and threat ranking; it is not a combo execution solver and cannot guarantee every loop is sequenced optimally.
+- Include patch-strategy.py at the repository root when uploading. Docker patches the pinned engine before compiling; mismatched source stops the build instead of silently dropping strategy.
+- Deploy this package on Render, then publish the matching website and start a NEW match. Solo Playtest is unchanged. Full Docker compilation and real-match strategy verification remain required after deployment.
 
 
 ## v0.31: X choices are capped at what your untapped sources and pool can actually pay; the prompt sends cost-per-X and base cost.

@@ -4,6 +4,9 @@ ARG FORGE_REF=a198319ac46debbc5dc0b3e6fec284360e511930
 WORKDIR /upstream
 RUN curl -fL "https://codeload.github.com/Card-Forge/forge/tar.gz/${FORGE_REF}" -o /tmp/forge.tar.gz \
     && tar -xzf /tmp/forge.tar.gz --strip-components=1 && rm /tmp/forge.tar.gz
+RUN apt-get update && apt-get install -y --no-install-recommends python3 && rm -rf /var/lib/apt/lists/*
+COPY patch-strategy.py /tmp/patch-strategy.py
+RUN python3 /tmp/patch-strategy.py /upstream
 RUN mvn -B -pl forge-gui-desktop -am -DskipTests -Dcheckstyle.skip install
 RUN mvn -B org.apache.maven.plugins:maven-install-plugin:3.1.3:install-file \
     -Dfile=forge-gui-desktop/target/forge-gui-desktop-2.0.16-SNAPSHOT-jar-with-dependencies.jar \
