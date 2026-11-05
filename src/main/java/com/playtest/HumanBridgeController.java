@@ -131,8 +131,9 @@ public final class HumanBridgeController extends PlayerControllerAi {
         // Same checkpoint Forge's desktop client takes before each priority prompt; barriers (draws, reveals, opponent actions) stay engine-owned.
         forge.game.undo.UndoManager undo = me.getGame().getUndoManager();
         undo.setMode(forge.game.undo.UndoManager.Mode.FREE);
-        // v0.23: keep the existing checkpoint while it still holds undoable actions, so Undo stays live across re-prompts.
-        if (!undo.canUndo(me)) undo.checkpoint(me.getGame(), me);
+        // v0.33: record one checkpoint per priority prompt so Undo steps back a single action. Forge skips
+        // the checkpoint right after a restore, so undoing repeatedly walks back one action at a time.
+        undo.checkpoint(me.getGame(), me);
         while (true) {
             List<SpellAbility> playable = new ArrayList<>();
             List<Card> candidates = new ArrayList<>();
@@ -199,7 +200,11 @@ public final class HumanBridgeController extends PlayerControllerAi {
             }
             if (!sa.canPlay()) continue;
             if (sa.isManaAbility()) {
-                if (activateHumanMana(sa)) MatchWorker.recordManaAction(sa);
+                if (activateHumanMana(sa)) {
+                    MatchWorker.recordManaAction(sa);
+                    // v0.33: mana abilities re-prompt inside this loop, so checkpoint the tapped state; Undo then untaps only this source.
+                    undo.checkpoint(me.getGame(), me);
+                }
                 else MatchWorker.emit(Map.of("type", "NOTICE", "message", "Mana ability could not be activated."));
                 continue; // mana abilities do not use the stack; keep priority
             }

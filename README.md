@@ -1,4 +1,7 @@
-# Companion Server v0.32
+# Companion Server v0.33
+
+## v0.33: single-step undo
+A checkpoint is recorded at every priority prompt and after each manual mana activation, so Undo rewinds only the last action (for example, untapping just the last land tapped) instead of the whole turn. Rules-engine barriers (draws, reveals, opponent priority, resolution) still block undo.
 
 ## v0.32: catalog-aware opponent strategy
 - The website supplies the same Combo Finder feeds, matching complete combos in the AI deck, current Scryfall Game Changer flags and available USD prices.
