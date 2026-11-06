@@ -190,7 +190,7 @@ public final class MatchWorker {
             }
             try {
                 Map<String, Integer> counters = new LinkedHashMap<>();
-                for (var e : c.getCounters().entrySet()) if (e.getValue() != null && e.getValue() > 0) counters.put(e.getKey().getName(), e.getValue());
+                for (var e : c.getCounters().entrySet()) if (e.getCount() > 0) counters.put(e.getElement().getName(), e.getCount());
                 if (!counters.isEmpty()) m.put("counters", counters);
             } catch (RuntimeException ignored) { }
             list.add(m);
