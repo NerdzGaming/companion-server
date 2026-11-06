@@ -112,7 +112,7 @@ public final class HumanBridgeController extends PlayerControllerAi {
                 if (id.equals(m.path("promptId").asText())) return m;
             }
         } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
-        MatchWorker.emit(Map.of("type", "NOTICE", "message", "SURVEIL".equals(kind) ? "No answer in time — surveilled cards stay on top in their original order." : "No answer in time — Forge AI decided for you."));
+        MatchWorker.emit(Map.of("type", "NOTICE", "message", "SURVEIL".equals(kind) ? "No answer in time — the cards stay on top in their original order." : "No answer in time — Forge AI decided for you."));
         return null;
     }
 
@@ -329,6 +329,47 @@ public final class HumanBridgeController extends PlayerControllerAi {
                 return ImmutablePair.of(top, grave);
             }
             MatchWorker.emit(Map.of("type", "NOTICE", "message", "Each surveilled card must be kept or put in the graveyard exactly once. Please choose again."));
+        }
+    }
+
+    /** v0.36: Scry (Preordain, scry lands) — the player sees the cards and splits them top/bottom. */
+    @Override
+    public ImmutablePair<CardCollection, CardCollection> arrangeForScry(CardCollection topN) {
+        if (topN.isEmpty()) return ImmutablePair.of(new CardCollection(), new CardCollection());
+        ImmutablePair<CardCollection, CardCollection> got = askLibraryArrange("scry", topN);
+        return got != null ? got : ImmutablePair.of(new CardCollection(topN), new CardCollection());
+    }
+
+    /** v0.36: Ponder, Brainstorm, Sensei's Top — the player orders cards going onto the library. */
+    @Override
+    public CardCollectionView orderMoveToZoneList(CardCollectionView cards, forge.game.zone.ZoneType destinationZone, SpellAbility source) {
+        if (destinationZone != forge.game.zone.ZoneType.Library || cards.size() < 2) return super.orderMoveToZoneList(cards, destinationZone, source);
+        ImmutablePair<CardCollection, CardCollection> got = askLibraryArrange("order", new CardCollection(cards));
+        if (got == null) return cards;
+        // Forge places this list so the last card ends on top; the prompt answers top-first.
+        CardCollection reversed = new CardCollection();
+        for (int i = got.left.size() - 1; i >= 0; i--) reversed.add(got.left.get(i));
+        return reversed;
+    }
+
+    private ImmutablePair<CardCollection, CardCollection> askLibraryArrange(String mode, CardCollection topN) {
+        List<Map<String, Object>> options = new ArrayList<>();
+        List<Integer> offered = new ArrayList<>();
+        for (Card c : topN) { options.add(card(c)); offered.add(c.getId()); }
+        while (true) {
+            JsonNode a = ask("SURVEIL", Map.of("cards", options, "mode", mode));
+            if (a == null) return null;
+            List<Integer> topIds = new ArrayList<>(), bottomIds = new ArrayList<>();
+            for (JsonNode id : a.path("top")) topIds.add(id.asInt(-1));
+            for (JsonNode id : a.path("graveyard")) bottomIds.add(id.asInt(-1));
+            boolean ok = a.path("top").isArray() && HumanChoices.validPartition(offered, topIds, bottomIds) && ("scry".equals(mode) || bottomIds.isEmpty());
+            if (ok) {
+                CardCollection top = new CardCollection(), bottom = new CardCollection();
+                for (Integer id : topIds) for (Card c : topN) if (c.getId() == id) top.add(c);
+                for (Integer id : bottomIds) for (Card c : topN) if (c.getId() == id) bottom.add(c);
+                return ImmutablePair.of(top, bottom);
+            }
+            MatchWorker.emit(Map.of("type", "NOTICE", "message", "Each card must be placed exactly once. Please choose again."));
         }
     }
 
