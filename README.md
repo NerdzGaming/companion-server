@@ -196,8 +196,8 @@ card-specific behavior remain to be verified on Render.
 
 Pinned Forge commit: a198319ac46debbc5dc0b3e6fec284360e511930.
 One isolated JVM per match. Forge's dependencies stay outside the Javalin server
-classpath to preserve the Jetty isolation fix. Defaults: WORKER_HEAP=1200m,
-MAX_MATCHES=1; use a host with adequate memory (approximately 2 GB or greater).
+classpath to preserve the Jetty isolation fix. Defaults: WORKER_HEAP=900m,
+MAX_MATCHES=2 (override in the host env; budget ~1 GB RAM per table).
 
 Contract: GET /, POST /match/create with playerDeckDck/aiDeckDck and optional
 Commander or Constructed format; WebSocket /match/{id} carries STATE/PROMPT and

@@ -24,7 +24,7 @@ import java.util.concurrent.ConcurrentHashMap;
 public final class App {
     static final ObjectMapper JSON = new ObjectMapper();
     static final int MAX_DECK = 65536;
-    static final int MAX_MATCHES = Integer.parseInt(System.getenv().getOrDefault("MAX_MATCHES", "1"));
+    static final int MAX_MATCHES = Integer.parseInt(System.getenv().getOrDefault("MAX_MATCHES", "2"));
 
     static final class MatchSession {
         final String id; final String socketToken; volatile long tokenExpires; final String playerDeck; final String aiDeck; final String format; String strategy = "{}";
@@ -152,10 +152,11 @@ public final class App {
         // Also reclaim matches whose browser went silent (closed tab, refresh, lost connection).
         long now0 = System.currentTimeMillis();
         if (running() >= MAX_MATCHES) MATCHES.values().stream().filter(x -> x != m && x.worker != null && reclaimable(x, now0)).toList().forEach(App::end);
-        // Wait up to 30s for a slot instead of failing immediately.
-        long deadline = System.currentTimeMillis() + 30_000;
-        if (running() >= MAX_MATCHES) broadcast(m, "{\"type\":\"STATUS\",\"message\":\"Waiting for a free game table\"}");
+        // Wait up to 90s for a slot instead of failing immediately.
+        long deadline = System.currentTimeMillis() + 90_000;
         while (running() >= MAX_MATCHES && System.currentTimeMillis() < deadline && !m.sockets.isEmpty()) {
+            long waiting = MATCHES.values().stream().filter(x -> x.worker == null && !x.sockets.isEmpty() && x.created <= m.created).count();
+            broadcast(m, "{\"type\":\"STATUS\",\"queue\":" + Math.max(1, waiting) + ",\"tables\":" + MAX_MATCHES + ",\"message\":\"All " + MAX_MATCHES + " game tables are full. You are #" + Math.max(1, waiting) + " in line.\"}");
             try { Thread.sleep(2000); } catch (InterruptedException e) { return; }
             long now = System.currentTimeMillis();
             MATCHES.values().stream().filter(x -> x != m && x.worker != null && reclaimable(x, now)).toList().forEach(App::end);
@@ -169,7 +170,7 @@ public final class App {
             Path strategy = job.resolve("strategy.json"); Files.writeString(strategy, m.strategy);
             String workerCp = System.getenv().getOrDefault("WORKER_CP", "/app/server.jar:/app/forge/forge-headless.jar:/app/lib/*");
             List<String> cmd = List.of(Path.of(System.getProperty("java.home"), "bin", "java").toString(),
-                "-Xmx" + System.getenv().getOrDefault("WORKER_HEAP", "1200m"), "-Djava.awt.headless=true", "-Duser.home=" + job,
+                "-Xmx" + System.getenv().getOrDefault("WORKER_HEAP", "900m"), "-Djava.awt.headless=true", "-Duser.home=" + job,
                 "--add-opens=java.base/java.lang=ALL-UNNAMED", "--add-opens=java.base/java.util=ALL-UNNAMED",
                 "-cp", workerCp, MatchWorker.class.getName(), a.toString(), b.toString(), m.format, strategy.toString());
             m.worker = new ProcessBuilder(cmd).redirectError(ProcessBuilder.Redirect.INHERIT).start();

@@ -1136,9 +1136,15 @@ public final class HumanBridgeController extends PlayerControllerAi {
     /** Only affordability and engine restrictions, never AI strategic life/planeswalker thresholds. */
     private boolean canPayHumanCost(Cost cost, SpellAbility sa, boolean effect) {
         if (cost == null) return true;
-        return ComputerUtilMana.canPayManaCost(cost, sa, getPlayer(), 0, effect)
-            && CostPayment.canPayAdditionalCosts(cost, sa, effect, getPlayer());
+        // v0.38: affordability scans must never prompt the human (e.g. convoke pickers on every priority pass).
+        boolean prev = checkingAffordability;
+        checkingAffordability = true;
+        try {
+            return ComputerUtilMana.canPayManaCost(cost, sa, getPlayer(), 0, effect)
+                && CostPayment.canPayAdditionalCosts(cost, sa, effect, getPlayer());
+        } finally { checkingAffordability = prev; }
     }
+    private boolean checkingAffordability = false;
 
     @Override
     public List<OptionalCostValue> chooseOptionalCosts(SpellAbility sa, List<OptionalCostValue> optional) {
@@ -1330,6 +1336,7 @@ public final class HumanBridgeController extends PlayerControllerAi {
     /** v0.35: Convoke / Improvise — the player picks which untapped permanents help pay. */
     @Override
     public Map<Card, ManaCostShard> chooseCardsForConvokeOrImprovise(SpellAbility sa, forge.card.mana.ManaCost manaCost, CardCollectionView untappedCards, boolean artifacts, boolean creatures, Integer maxReduction) {
+        if (checkingAffordability) return super.chooseCardsForConvokeOrImprovise(sa, manaCost, untappedCards, artifacts, creatures, maxReduction);
         List<Card> list = new ArrayList<>(untappedCards);
         if (list.isEmpty()) return new HashMap<>();
         int max = Math.min(list.size(), maxReduction != null ? maxReduction : manaCost.getCMC());
