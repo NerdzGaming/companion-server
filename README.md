@@ -1,4 +1,10 @@
-# Companion Server v0.34
+# Companion Server v0.35
+
+## v0.35: commander moves, public reveals, counters, convoke
+- Commander leaving to graveyard/exile/hand/library asks the owner whether to send it to the command zone.
+- Cards an opponent reveals are logged by name and sent as a REVEAL event.
+- Battlefield cards include every counter (lore, burden, +1/+1…).
+- Convoke/Improvise asks which untapped permanents help pay.
 
 ## v0.34: playable exile shelf
 - Exile entries now carry the viewer's play grants (`playable`, `freeCast`) from Forge's `mayPlay` — impulse draws (Light Up the Stage, Reckless Impulse), theft (Ragavan, Gonti), and adventures exiled "on an adventure" — plus `counters` (suspend time counters).

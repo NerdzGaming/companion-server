@@ -155,7 +155,13 @@ public final class MatchWorker {
             if (withState) { m.put("tapped", c.isTapped());
                 if (!c.isFaceDown() && c.isPlaneswalker()) m.put("loyalty", c.getCurrentLoyalty());
                 if (c.isCreature()) { m.put("power", c.getNetPower()); m.put("toughness", c.getNetToughness()); if (c.hasFirstStrike() || c.hasDoubleStrike()) m.put("firstStrike", true); }
-                if (c.getEntityAttachedTo() instanceof Card host) m.put("attachedTo", host.getId()); }
+                if (c.getEntityAttachedTo() instanceof Card host) m.put("attachedTo", host.getId());
+                // v0.35: lore (Urza's Saga), burden (The One Ring), +1/+1 and every other counter on the battlefield.
+                try {
+                    Map<String, Integer> counters = new LinkedHashMap<>();
+                    for (var e : c.getCounters().entrySet()) if (e.getCount() > 0) counters.put(e.getElement().getName(), e.getCount());
+                    if (!counters.isEmpty()) m.put("counters", counters);
+                } catch (RuntimeException ignored) { } }
             list.add(m);
         }
         return list;

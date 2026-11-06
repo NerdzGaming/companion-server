@@ -44,6 +44,11 @@ public final class PublicActionLog {
     }
     /** Public picks from revealed cards (e.g. Atraxa), logged one line per card. */
     void revealedPick(String player, String card, String group) { add("choice", player + " picks " + card + " (" + group + ") from the revealed cards."); }
+    /** v0.35: cards an opponent reveals to the table (Atraxa, Dark Confidant, reveal-from-hand). */
+    void revealed(String owner, String zone, List<String> cards) {
+        if (cards.isEmpty()) return;
+        add("reveal", owner + " reveals " + String.join(", ", cards) + (zone == null ? "" : " from their " + zone) + ".");
+    }
     void manaAction(String source) { add("mana", "Activates " + source + " for mana."); }
     synchronized List<Map<String, Object>> snapshot() { flushPending(); return new ArrayList<>(entries); }
     @Subscribe public void turn(GameEventTurnBegan e) { add("state", "Turn " + e.turnNumber() + " begins — " + e.turnOwner().getName() + "."); }

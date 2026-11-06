@@ -826,7 +826,15 @@ public final class HumanBridgeController extends PlayerControllerAi {
     @Override
     public boolean confirmAction(SpellAbility sa, PlayerActionConfirmMode mode, String message, List<String> options, Card cardToShow, Map<String, Object> params) {
         Map<String, Object> body = new LinkedHashMap<>();
-        body.put("source", src(sa)); body.put("message", message == null || message.isBlank() ? "Do you want to do this?" : message);
+        String text = message == null || message.isBlank() ? "Do you want to do this?" : message;
+        // v0.35: commander moving to graveyard/exile names the card and both destinations.
+        if (mode == PlayerActionConfirmMode.ChangeZoneToAltDestination && sa != null && sa.getHostCard() != null && sa.getHostCard().isCommander()) {
+            Card cmd = sa.getHostCard();
+            text = "Your commander " + cmd.getName() + " is going to the " + zoneLabel(cmd.getZone() == null ? null : cmd.getZone().getZoneType()) + ". Move it to the command zone instead?";
+            body.put("commanderMove", true); body.put("card", card(cmd));
+            body.put("yesLabel", "Command zone"); body.put("noLabel", "Leave it there");
+        }
+        body.put("source", src(sa)); body.put("message", text);
         JsonNode a = ask("CONFIRM", body);
         if (a == null) return super.confirmAction(sa, mode, message, options, cardToShow, params);
         return a.path("yes").asBoolean(false);
@@ -1226,5 +1234,70 @@ public final class HumanBridgeController extends PlayerControllerAi {
         if (!canWithout) { for (Card c : held) c.setTapped(false); return ComputerUtilMana.payManaCost(being, sa, me, effect); }
         try { return ComputerUtilMana.payManaCost(being, sa, me, effect); }
         finally { for (Card c : held) c.setTapped(false); }
+    }
+
+    private static String zoneLabel(ZoneType z) {
+        if (z == null) return "new zone";
+        return switch (z) { case Graveyard -> "graveyard"; case Exile -> "exile"; case Hand -> "hand"; case Library -> "library"; default -> z.name().toLowerCase(); };
+    }
+
+    /** v0.35: optional replacement effects (commander to hand/library -> command zone) are the player's decision. */
+    @Override
+    public boolean confirmReplacementEffect(forge.game.replacement.ReplacementEffect re, SpellAbility effectSA, GameEntity affected, String question) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        String text = question == null || question.isBlank() ? "Apply this replacement effect?" : question;
+        if (affected instanceof Card c && c.isCommander() && c.getOwner() == getPlayer()) {
+            text = "Your commander " + c.getName() + " is changing zones. Move it to the command zone instead?";
+            body.put("commanderMove", true); body.put("card", card(c));
+            body.put("yesLabel", "Command zone"); body.put("noLabel", "Let it move");
+        }
+        body.put("source", re.getHostCard() == null ? "" : re.getHostCard().getName()); body.put("message", text);
+        JsonNode a = ask("CONFIRM", body);
+        if (a == null) return super.confirmReplacementEffect(re, effectSA, affected, question);
+        return a.path("yes").asBoolean(false);
+    }
+
+    /** v0.35: cards revealed by the opponent become public — logged by name and announced on the table. */
+    @Override
+    public void reveal(CardCollectionView cards, ZoneType zone, Player owner, String messagePrefix, boolean addSuffix) {
+        super.reveal(cards, zone, owner, messagePrefix, addSuffix);
+        announceReveal(new ArrayList<>(cards), zone, owner);
+    }
+
+    @Override
+    public void reveal(List<forge.game.card.CardView> cards, ZoneType zone, forge.game.player.PlayerView owner, String messagePrefix, boolean addSuffix) {
+        super.reveal(cards, zone, owner, messagePrefix, addSuffix);
+        Game game = getPlayer().getGame();
+        List<Card> real = new ArrayList<>();
+        for (var cv : cards) { Card c = game.findByView(cv); if (c != null) real.add(c); }
+        Player p = owner == null ? null : game.getPlayer(owner);
+        announceReveal(real, zone, p);
+    }
+
+    private void announceReveal(List<Card> cards, ZoneType zone, Player owner) {
+        if (cards.isEmpty() || owner == null || owner == getPlayer()) return;
+        List<String> names = new ArrayList<>();
+        List<Map<String, Object>> shown = new ArrayList<>();
+        for (Card c : cards) { if (c.isFaceDown()) continue; names.add(c.getName()); shown.add(card(c)); }
+        if (names.isEmpty()) return;
+        if (MatchWorker.actionLog != null) MatchWorker.actionLog.revealed(owner.getName(), zone == null ? null : zoneLabel(zone), names);
+        Map<String, Object> ev = new LinkedHashMap<>();
+        ev.put("type", "REVEAL"); ev.put("player", owner.getName()); ev.put("zone", zone == null ? "" : zoneLabel(zone)); ev.put("cards", shown);
+        MatchWorker.emit(ev);
+    }
+
+    /** v0.35: Convoke / Improvise — the player picks which untapped permanents help pay. */
+    @Override
+    public Map<Card, ManaCostShard> chooseCardsForConvokeOrImprovise(SpellAbility sa, forge.card.mana.ManaCost manaCost, CardCollectionView untappedCards, boolean artifacts, boolean creatures, Integer maxReduction) {
+        List<Card> list = new ArrayList<>(untappedCards);
+        if (list.isEmpty()) return new HashMap<>();
+        int max = Math.min(list.size(), maxReduction != null ? maxReduction : manaCost.getCMC());
+        if (max <= 0) return new HashMap<>();
+        String what = creatures && artifacts ? "creatures or artifacts" : creatures ? "creatures" : "artifacts";
+        String title = (creatures ? "Convoke" : "Improvise") + ": tap untapped " + what + " to help pay " + manaCost + " (optional)";
+        List<Card> got = pick("CHOOSE", title, sa, list, 0, max);
+        if (got == null) return super.chooseCardsForConvokeOrImprovise(sa, manaCost, untappedCards, artifacts, creatures, maxReduction);
+        if (got.isEmpty()) return new HashMap<>();
+        return ComputerUtilMana.getConvokeOrImproviseFromList(manaCost, got, artifacts, creatures);
     }
 }
