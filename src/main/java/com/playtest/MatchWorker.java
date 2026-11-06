@@ -10,6 +10,7 @@ import forge.game.GameRules;
 import forge.game.GameType;
 import forge.game.Match;
 import forge.game.card.Card;
+import forge.game.card.CardPlayOption;
 import forge.game.player.Player;
 import forge.game.player.RegisteredPlayer;
 import forge.game.zone.ZoneType;
@@ -109,7 +110,7 @@ public final class MatchWorker {
             if (top != null) side.put("libraryTop", Map.of("id", top.getId(), "name", top.getName(), "typeLine", top.getType().toString()));
             side.put("battlefield", cards(p, ZoneType.Battlefield, true));
             side.put("graveyard", cards(p, ZoneType.Graveyard, false));
-            side.put("exile", cards(p, ZoneType.Exile, false));
+            side.put("exile", exileCards(p, viewer));
             side.put("command", cards(p, ZoneType.Command, false));
             // Fog of war: only the website player's own hand is named.
             if (p.getName().equals("player")) side.put("hand", cards(p, ZoneType.Hand, false));
@@ -155,6 +156,43 @@ public final class MatchWorker {
                 if (!c.isFaceDown() && c.isPlaneswalker()) m.put("loyalty", c.getCurrentLoyalty());
                 if (c.isCreature()) { m.put("power", c.getNetPower()); m.put("toughness", c.getNetToughness()); if (c.hasFirstStrike() || c.hasDoubleStrike()) m.put("firstStrike", true); }
                 if (c.getEntityAttachedTo() instanceof Card host) m.put("attachedTo", host.getId()); }
+            list.add(m);
+        }
+        return list;
+    }
+
+    /**
+     * Exile entries plus the viewer's play grants (impulse draws, Ragavan-style theft,
+     * adventures on the stack's other side) and counters (suspend time counters), so the
+     * table can shelve cards the player may still cast from exile.
+     */
+    static List<Map<String, Object>> exileCards(Player p, Player viewer) {
+        List<Map<String, Object>> list = new ArrayList<>();
+        for (Card c : new ArrayList<>(p.getCardsIn(ZoneType.Exile))) {
+            if (c.isImmutable()) continue;
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("id", c.getId());
+            m.put("name", visibleName(c));
+            if (!c.isFaceDown()) {
+                m.put("token", c.isToken());
+                m.put("typeLine", c.getType().toString());
+            }
+            if (viewer != null && !c.isFaceDown()) {
+                try {
+                    List<CardPlayOption> grants = c.mayPlay(viewer);
+                    if (!grants.isEmpty()) {
+                        m.put("playable", true);
+                        for (CardPlayOption o : grants) {
+                            if (o.getPayManaCost() == CardPlayOption.PayManaCost.NO) { m.put("freeCast", true); break; }
+                        }
+                    }
+                } catch (RuntimeException ignored) { }
+            }
+            try {
+                Map<String, Integer> counters = new LinkedHashMap<>();
+                for (var e : c.getCounters().entrySet()) if (e.getValue() != null && e.getValue() > 0) counters.put(e.getKey().getName(), e.getValue());
+                if (!counters.isEmpty()) m.put("counters", counters);
+            } catch (RuntimeException ignored) { }
             list.add(m);
         }
         return list;

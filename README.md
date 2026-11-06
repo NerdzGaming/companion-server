@@ -1,4 +1,8 @@
-# Companion Server v0.33
+# Companion Server v0.34
+
+## v0.34: playable exile shelf
+- Exile entries now carry the viewer's play grants (`playable`, `freeCast`) from Forge's `mayPlay` — impulse draws (Light Up the Stage, Reckless Impulse), theft (Ragavan, Gonti), and adventures exiled "on an adventure" — plus `counters` (suspend time counters).
+- The website shelves those cards above the hand dock with art, counter badges and the usual cast actions; suspend cards cast themselves when the last time counter leaves, exactly as the engine rules it.
 
 ## v0.33: single-step undo
 A checkpoint is recorded at every priority prompt and after each manual mana activation, so Undo rewinds only the last action (for example, untapping just the last land tapped) instead of the whole turn. Rules-engine barriers (draws, reveals, opponent priority, resolution) still block undo.
