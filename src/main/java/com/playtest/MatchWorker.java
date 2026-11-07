@@ -63,6 +63,7 @@ public final class MatchWorker {
         game.setNoGUIUser();
         if (args.length > 3) {
             forge.ai.NerdzStrategy.install(strategy::bonus);
+            forge.ai.NerdzStrategy.installSequencer(strategy::sequence);
         }
         actionLog = new PublicActionLog(game);
         game.subscribeToEvents(actionLog);

@@ -72,6 +72,45 @@ public final class OpponentStrategy {
         try { return base + threatBonus(card, ai, size >= 2 && count >= size); } catch (RuntimeException ignored) { return base; }
     }
 
+    /** Sequencing delta for one AI-castable ability; ordering only, Forge still decides legality. */
+    public int sequence(forge.game.spellability.SpellAbility sa) {
+        try {
+            Card card = sa == null ? null : sa.getHostCard();
+            if (card == null || card.getGame() == null) return 0;
+            var game = card.getGame(); var ph = game.getPhaseHandler();
+            Player ai = sa.getActivatingPlayer();
+            if (ai == null || !ai.getName().equals("opponent") || !ai.equals(ph.getPriorityPlayer())) return 0;
+            var api = sa.getApi();
+            boolean selection = api == forge.game.ability.ApiType.Draw || api == forge.game.ability.ApiType.Scry
+                || api == forge.game.ability.ApiType.Surveil || api == forge.game.ability.ApiType.Dig;
+            boolean combat = api == forge.game.ability.ApiType.Pump || api == forge.game.ability.ApiType.PumpAll
+                || api == forge.game.ability.ApiType.Destroy || api == forge.game.ability.ApiType.DealDamage;
+            var phase = ph.getPhase();
+            boolean ownTurn = ph.isPlayerTurn(ai);
+            boolean endBeforeMine = !ownTurn && phase == forge.game.phase.PhaseType.END_OF_TURN && ai.equals(ph.getNextTurn());
+            boolean instant = card.isInstant() || card.hasKeyword(forge.game.keyword.Keyword.FLASH) || !sa.isSpell();
+            int risk = 0, hand = 0;
+            for (Player p : game.getPlayers()) {
+                if (p.equals(ai) || p.hasLost()) continue;
+                int open = 0;
+                for (Card c : p.getCardsIn(ZoneType.Battlefield)) {
+                    if (c.isFaceDown() || c.isTapped()) continue;
+                    for (var ma : c.getManaAbilities()) {
+                        var part = ma.getManaPart();
+                        if (part != null && (part.canProduce("U") || part.canProduce("W") || part.canProduce("B") || part.canProduce("R"))) { open++; break; }
+                    }
+                }
+                if (ActionSequencer.interactionRisk(open, p.getCardsIn(ZoneType.Hand).size())) risk++;
+            }
+            for (Card c : ai.getCardsIn(ZoneType.Hand)) if (!c.isLand()) hand++;
+            boolean tierOne = card.isCommander() || bonus(card) >= 60;
+            return ActionSequencer.priority(new ActionSequencer.Play(
+                phase == forge.game.phase.PhaseType.MAIN1, phase == forge.game.phase.PhaseType.MAIN2, ownTurn, endBeforeMine,
+                game.getStack().isEmpty(), card.isCreature(), card.hasKeyword(forge.game.keyword.Keyword.HASTE), combat,
+                instant, selection, ai.getLandsPlayedThisTurn() == 0, risk > 0, tierOne, hand > 1));
+        } catch (RuntimeException ignored) { return 0; }
+    }
+
     /** Commander threat rubric applied to opposing face-up permanents only (removal/target valuation). */
     private int threatBonus(Card card, Player ai, boolean completeCombo) {
         var game = card.getGame();

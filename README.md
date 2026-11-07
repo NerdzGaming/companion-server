@@ -1,4 +1,8 @@
-# Companion Server v0.40
+# Companion Server v0.42
+
+## v0.42: play sequencing
+- AI Opponent orders its own legal plays: card selection before the land drop, only combat-relevant spells (haste, pumps, removal) in Main 1, lower-tier threats first into open counter mana, instant-speed draw held for the end step before its turn.
+- Only ordering changes; Forge still decides whether and what to cast. Mana-tapping preference, chump-block protection and responding-to-triggers rules are written and tested but not yet wired into Forge.
 
 ## v0.41
 - AI Opponent scores opposing players and permanents with the Commander threat rubric (draw/mana engines, apex commanders, combo pieces, lethal attackers, stax "enemy of my enemy"). Only public battlefield, hand counts and life are used.
