@@ -67,6 +67,62 @@ public final class OpponentStrategy {
             int score = StrategyWeights.bonus(false, null, combo.size(), present);
             if (score > best) { best = score; size = combo.size(); count = present; }
         }
-        return StrategyWeights.bonus(data != null && data.changer(), data == null ? null : data.price(), size, count);
+        int base = StrategyWeights.bonus(data != null && data.changer(), data == null ? null : data.price(), size, count);
+        if (own || !card.isInZone(ZoneType.Battlefield)) return base;
+        try { return base + threatBonus(card, ai, size >= 2 && count >= size); } catch (RuntimeException ignored) { return base; }
+    }
+
+    /** Commander threat rubric applied to opposing face-up permanents only (removal/target valuation). */
+    private int threatBonus(Card card, Player ai, boolean completeCombo) {
+        var game = card.getGame();
+        int turn = game.getPhaseHandler().getTurn();
+        List<Player> opponents = new ArrayList<>();
+        for (Player p : game.getPlayers()) if (!p.equals(ai) && !p.hasLost()) opponents.add(p);
+        Map<Player, ThreatAssessment.PlayerState> states = new HashMap<>();
+        for (Player p : opponents) states.put(p, publicState(p, ai, turn));
+        double avg = ThreatAssessment.averageMana(states.values());
+        Player archenemy = null; int best = Integer.MIN_VALUE;
+        for (Player p : opponents) { int s = ThreatAssessment.playerThreat(states.get(p), avg); if (s > best) { best = s; archenemy = p; } }
+        Player owner = card.getController();
+        boolean ownerLeads = owner.equals(archenemy);
+        String name = card.getName();
+        ThreatAssessment.Kind kind;
+        var combat = game.getCombat();
+        if (completeCombo) kind = ThreatAssessment.Kind.COMBO;
+        else if (combat != null && combat.isAttacking(card) && attackingPower(combat, game) >= ai.getLife()) kind = ThreatAssessment.Kind.LETHAL_ATTACKER;
+        else if (card.isPlaneswalker() && card.getCounters(forge.game.card.CounterEnumType.LOYALTY) >= 7) kind = ThreatAssessment.Kind.ULTIMATE_WALKER;
+        else if (card.isCommander() && ThreatAssessment.apex(name)) kind = ThreatAssessment.Kind.APEX_COMMANDER;
+        else if (ThreatAssessment.drawEngine(name) || ThreatAssessment.manaEngine(name)) kind = ThreatAssessment.Kind.ENGINE;
+        else if (ThreatAssessment.stax(name)) kind = ThreatAssessment.Kind.STAX;
+        else kind = ThreatAssessment.Kind.OTHER;
+        // Stax that sits with a non-leader polices the archenemy; our own assembled combo pieces mean it may lock our win.
+        boolean locksBotWin = kind == ThreatAssessment.Kind.STAX && !ownCombos.isEmpty();
+        boolean policesLeader = kind == ThreatAssessment.Kind.STAX && archenemy != null && !ownerLeads && opponents.size() > 1;
+        int score = ThreatAssessment.permanentThreat(kind, ownerLeads, locksBotWin, policesLeader);
+        boolean otherBucketOne = false;
+        for (Player p : opponents) if (!p.equals(owner) && states.get(p).lethalOnBoard()) otherBucketOne = true;
+        score = ThreatAssessment.deferForCombo(score, kind, otherBucketOne);
+        return ThreatAssessment.evaluatorBonus(score);
+    }
+
+    private static int attackingPower(forge.game.combat.Combat combat, forge.game.Game game) {
+        int total = 0;
+        for (Card c : combat.getAttackers()) total += Math.max(0, c.getNetCombatDamage());
+        return total;
+    }
+
+    /** Public information only: battlefield, hand count, life. */
+    private static ThreatAssessment.PlayerState publicState(Player p, Player ai, int turn) {
+        int mana = 0, power = 0, draw = 0, potential = 0; String colors = "";
+        for (Card c : p.getCardsIn(ZoneType.Battlefield)) {
+            if (c.isFaceDown()) continue;
+            if (c.isLand() || !c.getManaAbilities().isEmpty()) mana++;
+            if (c.isCreature()) { power += Math.max(0, c.getNetPower()); if (!c.isTapped()) potential += Math.max(0, c.getNetCombatDamage()); }
+            if (ThreatAssessment.drawEngine(c.getName())) draw++;
+            if (c.isCommander()) colors += c.getManaCost().toString();
+        }
+        for (Card c : p.getCardsIn(ZoneType.Command)) if (c.isCommander()) colors += c.getManaCost().toString();
+        return new ThreatAssessment.PlayerState(p.getCardsIn(ZoneType.Hand).size(), p.getLife(), mana, power, draw,
+            false, 0, colors, potential >= ai.getLife(), turn);
     }
 }

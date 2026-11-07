@@ -1,5 +1,10 @@
 # Companion Server v0.40
 
+## v0.41
+- AI Opponent scores opposing players and permanents with the Commander threat rubric (draw/mana engines, apex commanders, combo pieces, lethal attackers, stax "enemy of my enemy"). Only public battlefield, hand counts and life are used.
+- Removal targeting is boosted only for threats scoring 65+; stax that polices the table leader is protected. Combat-defender choice and sandbagging rules are scored but not yet wired into Forge combat decisions.
+
+
 ## v0.40: competitive opponent mulligans
 - Opening hands use the supplied 0–100 rubric, play/draw roles, colour-pip assignment, early action, pregame/engine bonuses and keep thresholds 65/55/40/25/0.
 - London redraws remain seven cards; the AI scores its virtual kept hand and bottoms once on Keep. Forge owns format/free-mulligan return counts; thresholds decay by actual redraw count.
