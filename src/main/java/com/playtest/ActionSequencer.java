@@ -40,4 +40,34 @@ public final class ActionSequencer {
     public static boolean mayChump(boolean utilityOrDork, int life, int incoming) {
         return !utilityOrDork || incoming >= life || life <= 10;
     }
+
+    /** v0.45: hold a non-lethal Main 2 creature when ahead on board and the opponent represents a wipe. */
+    public static boolean shouldSandbagOvercommit(int aiCreatures, int aiBoardPower, int oppBoardPower,
+                                                  int oppUntappedMana, int oppHandCount, boolean lethalAttack, boolean protectionUp) {
+        if (lethalAttack || protectionUp) return false;
+        boolean winning = aiCreatures >= 3 && aiBoardPower > oppBoardPower + 4;
+        boolean wipeRepresented = oppUntappedMana >= 4 && oppHandCount >= 1;
+        return winning && wipeRepresented;
+    }
+
+    /** v0.45: veto a non-lethal attack when the crackback next turn is lethal for us. */
+    public static boolean vetoCrackback(int aiLife, int outgoingUnblockedDamage, int defenderLife, int incomingCrackbackDamage) {
+        return outgoingUnblockedDamage < defenderLife && incomingCrackbackDamage >= aiLife;
+    }
+
+    /** v0.45: protected pieces never chump unless the unblocked hit would leave us at <= 4 life. */
+    public static boolean mayChumpStrict(boolean protectedPiece, int aiLife, int unblockedDamageWithChumpRemoved) {
+        return !protectedPiece || (aiLife - unblockedDamageWithChumpRemoved) <= 4;
+    }
+
+    /**
+     * v0.45: mana-source spending tiers. 0 = spend first (colorless-only or single-color not needed
+     * by held interaction), 1 = preserve (single-color needed by held interaction), 2 = preserve most
+     * (multicolor / any-color sources).
+     */
+    public static int manaSourceTapOrder(boolean colorlessOnly, int colorCount, boolean matchesHeldInstant) {
+        if (colorCount >= 2) return 2;
+        if (colorlessOnly || !matchesHeldInstant) return 0;
+        return 1;
+    }
 }

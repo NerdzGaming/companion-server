@@ -26,6 +26,28 @@ public final class ActionSequencerTest {
         eq(true, ActionSequencer.mayChump(true, 10, 5), "dork chumps at 10");
         eq(true, ActionSequencer.mayChump(true, 20, 20), "dork chumps vs lethal");
         eq(true, ActionSequencer.mayChump(false, 30, 5), "non-utility may chump");
+        // v0.45: sandbag overcommit
+        eq(true, ActionSequencer.shouldSandbagOvercommit(3, 12, 4, 4, 1, false, false), "ahead vs open wipe mana");
+        eq(false, ActionSequencer.shouldSandbagOvercommit(3, 12, 4, 4, 1, true, false), "never sandbag lethal");
+        eq(false, ActionSequencer.shouldSandbagOvercommit(3, 12, 4, 4, 1, false, true), "deploy with protection up");
+        eq(false, ActionSequencer.shouldSandbagOvercommit(2, 12, 4, 4, 1, false, false), "need 3+ creatures to be ahead");
+        eq(false, ActionSequencer.shouldSandbagOvercommit(3, 8, 4, 4, 1, false, false), "need +4 power margin");
+        eq(false, ActionSequencer.shouldSandbagOvercommit(3, 12, 4, 3, 1, false, false), "no wipe mana open");
+        eq(false, ActionSequencer.shouldSandbagOvercommit(3, 12, 4, 4, 0, false, false), "empty hand represents nothing");
+        // v0.45: crackback veto
+        eq(true, ActionSequencer.vetoCrackback(20, 5, 10, 20), "non-lethal into lethal crackback");
+        eq(false, ActionSequencer.vetoCrackback(20, 10, 10, 25), "lethal attack ignores crackback");
+        eq(false, ActionSequencer.vetoCrackback(20, 5, 10, 10), "survivable crackback");
+        // v0.45: strict chump floor
+        eq(false, ActionSequencer.mayChumpStrict(true, 30, 5), "protected piece never chumps at 30");
+        eq(true, ActionSequencer.mayChumpStrict(true, 6, 5), "chump when the hit leaves <= 4 life");
+        eq(true, ActionSequencer.mayChumpStrict(false, 30, 5), "unprotected may chump");
+        // v0.45: mana source tap ordering
+        eq(0, ActionSequencer.manaSourceTapOrder(true, 0, false), "colorless-only spends first");
+        eq(0, ActionSequencer.manaSourceTapOrder(false, 1, false), "off-color single spends first");
+        eq(1, ActionSequencer.manaSourceTapOrder(false, 1, true), "held-interaction color is preserved");
+        eq(2, ActionSequencer.manaSourceTapOrder(false, 2, true), "multicolor preserved most");
+        eq(2, ActionSequencer.manaSourceTapOrder(false, 3, false), "any-color preserved most");
         System.out.println(n + " action sequencer checks passed");
     }
 }

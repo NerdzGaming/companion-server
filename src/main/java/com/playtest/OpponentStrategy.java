@@ -1,8 +1,12 @@
 package com.playtest;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import forge.game.ability.ApiType;
 import forge.game.card.Card;
+import forge.game.keyword.Keyword;
+import forge.game.phase.PhaseType;
 import forge.game.player.Player;
+import forge.game.spellability.SpellAbility;
 import forge.game.zone.ZoneType;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -68,27 +72,39 @@ public final class OpponentStrategy {
             if (score > best) { best = score; size = combo.size(); count = present; }
         }
         int base = StrategyWeights.bonus(data != null && data.changer(), data == null ? null : data.price(), size, count);
+        // v0.45: preserve our own utility creatures (dorks, engines, commanders) in AI evaluations.
+        if (own && card.isInZone(ZoneType.Battlefield) && card.isCreature() && preservedPiece(card)) return base + 90;
         if (own || !card.isInZone(ZoneType.Battlefield)) return base;
         try { return base + threatBonus(card, ai, size >= 2 && count >= size); } catch (RuntimeException ignored) { return base; }
     }
 
+    /** v0.45: utility creatures the AI should not trade or throw away as chump blockers. */
+    boolean preservedPiece(Card card) {
+        if (!card.getManaAbilities().isEmpty()) return true;
+        String name = card.getName();
+        return card.isCommander() || ThreatAssessment.drawEngine(name) || ThreatAssessment.manaEngine(name)
+            || ThreatAssessment.apex(name);
+    }
+
     /** Sequencing delta for one AI-castable ability; ordering only, Forge still decides legality. */
-    public int sequence(forge.game.spellability.SpellAbility sa) {
+    public int sequence(SpellAbility sa) {
         try {
             Card card = sa == null ? null : sa.getHostCard();
             if (card == null || card.getGame() == null) return 0;
             var game = card.getGame(); var ph = game.getPhaseHandler();
             Player ai = sa.getActivatingPlayer();
             if (ai == null || !ai.getName().equals("opponent") || !ai.equals(ph.getPriorityPlayer())) return 0;
+            // v0.45: vetoed plays always sort behind everything else.
+            if (shouldVeto(sa)) return -10000;
             var api = sa.getApi();
-            boolean selection = api == forge.game.ability.ApiType.Draw || api == forge.game.ability.ApiType.Scry
-                || api == forge.game.ability.ApiType.Surveil || api == forge.game.ability.ApiType.Dig;
-            boolean combat = api == forge.game.ability.ApiType.Pump || api == forge.game.ability.ApiType.PumpAll
-                || api == forge.game.ability.ApiType.Destroy || api == forge.game.ability.ApiType.DealDamage;
+            boolean selection = api == ApiType.Draw || api == ApiType.Scry
+                || api == ApiType.Surveil || api == ApiType.Dig;
+            boolean combat = api == ApiType.Pump || api == ApiType.PumpAll
+                || api == ApiType.Destroy || api == ApiType.DealDamage;
             var phase = ph.getPhase();
             boolean ownTurn = ph.isPlayerTurn(ai);
-            boolean endBeforeMine = !ownTurn && phase == forge.game.phase.PhaseType.END_OF_TURN && ai.equals(ph.getNextTurn());
-            boolean instant = card.isInstant() || card.hasKeyword(forge.game.keyword.Keyword.FLASH) || !sa.isSpell();
+            boolean endBeforeMine = !ownTurn && phase == PhaseType.END_OF_TURN && ai.equals(ph.getNextTurn());
+            boolean instant = card.isInstant() || card.hasKeyword(Keyword.FLASH) || !sa.isSpell();
             int risk = 0, hand = 0;
             for (Player p : game.getPlayers()) {
                 if (p.equals(ai) || p.hasLost()) continue;
@@ -104,15 +120,247 @@ public final class OpponentStrategy {
             }
             for (Card c : ai.getCardsIn(ZoneType.Hand)) if (!c.isLand()) hand++;
             boolean tierOne = card.isCommander() || bonus(card) >= 60;
-            return ActionSequencer.priority(new ActionSequencer.Play(
-                phase == forge.game.phase.PhaseType.MAIN1, phase == forge.game.phase.PhaseType.MAIN2, ownTurn, endBeforeMine,
-                game.getStack().isEmpty(), card.isCreature(), card.hasKeyword(forge.game.keyword.Keyword.HASTE), combat,
+            int delta = ActionSequencer.priority(new ActionSequencer.Play(
+                phase == PhaseType.MAIN1, phase == PhaseType.MAIN2, ownTurn, endBeforeMine,
+                game.getStack().isEmpty(), card.isCreature(), card.hasKeyword(Keyword.HASTE), combat,
                 instant, selection, ai.getLandsPlayedThisTurn() == 0, risk > 0, tierOne, hand > 1));
+            // v0.45: answer an opponent's aura/equipment/pump on the stack instead of letting it resolve.
+            if (instant && isSingleTargetRemoval(sa, card) && isTargetedByOpponentBuffOnStack(null, ai)) delta += 40;
+            return delta;
         } catch (RuntimeException ignored) { return 0; }
+    }
+
+    /**
+     * v0.45: hard vetoes. True means the AI passes priority instead of making this play;
+     * OpponentMulliganController.chooseSpellAbilityToPlay enforces it, and sequence() demotes it.
+     */
+    public boolean shouldVeto(SpellAbility sa) {
+        try {
+            Card card = sa == null ? null : sa.getHostCard();
+            if (card == null || card.getGame() == null) return false;
+            var game = card.getGame(); var ph = game.getPhaseHandler();
+            Player ai = sa.getActivatingPlayer();
+            if (ai == null || !ai.getName().equals("opponent")) return false;
+            var phase = ph.getPhase();
+            boolean ownTurn = ph.isPlayerTurn(ai);
+            boolean mainOne = phase == PhaseType.MAIN1;
+            boolean mainTwo = phase == PhaseType.MAIN2;
+            boolean stackEmpty = game.getStack().isEmpty();
+            boolean endBeforeMine = !ownTurn && phase == PhaseType.END_OF_TURN && ai.equals(ph.getNextTurn());
+            boolean noLandYet = ai.getLandsPlayedThisTurn() == 0;
+            var api = sa.getApi();
+            boolean selection = api == ApiType.Draw || api == ApiType.Scry || api == ApiType.Surveil || api == ApiType.Dig;
+            boolean preLandCantrip = ownTurn && mainOne && noLandYet && selection;
+
+            // Land drops are never vetoed, except to let a pre-land card-selection play resolve first.
+            if (sa.isLandAbility()) return preLandCantrip && hasPreLandSelection(ai);
+
+            // Removal patience: hold single-target removal for real threats (score 65+).
+            if (isSingleTargetRemoval(sa, card)) {
+                int bestScore = bestRemovalTargetScore(sa, ai);
+                if (bestScore < 0) return true; // own permanent or stax that polices the leader
+                boolean discarding = ownTurn && mainTwo && ai.getCardsIn(ZoneType.Hand).size() > ai.getMaxHandSize();
+                if (!ThreatAssessment.removalAllowed(bestScore, endBeforeMine, discarding, tempoWin(game, ai))) return true;
+            }
+
+            boolean instant = card.isInstant() || card.hasKeyword(Keyword.FLASH) || !sa.isSpell();
+            boolean combat = combatRelevant(sa, card, ai);
+            boolean flashNonCombat = card.hasKeyword(Keyword.FLASH) && !combat;
+            // Instant-speed selection and non-combat flash threats wait for the end step before our turn.
+            if (instant && (selection || flashNonCombat) && !endBeforeMine) {
+                boolean allowed = !stackEmpty || preLandCantrip
+                    || (ownTurn && mainTwo && ai.getCardsIn(ZoneType.Hand).size() > ai.getMaxHandSize());
+                if (!allowed) return true;
+            }
+
+            // Main 1 hard filter: only pre-land cantrips, haste creatures and combat-relevant plays.
+            if (ownTurn && mainOne && stackEmpty) {
+                if (preLandCantrip) return false;
+                if (card.isCreature() && card.hasKeyword(Keyword.HASTE)) return false;
+                if (combat) return false;
+                return true;
+            }
+
+            // Main 2 sandbag: do not overcommit non-lethal creatures into open wipe mana while ahead.
+            if (ownTurn && mainTwo && card.isCreature() && sa.isSpell() && shouldSandbag(game, ai)) return true;
+            return false;
+        } catch (RuntimeException ignored) { return false; }
+    }
+
+    /** v0.45: true when an opponent's aura, equipment attach or pump on the stack targets this card (or anything, when target is null). */
+    public boolean isTargetedByOpponentBuffOnStack(Card target, Player ai) {
+        try {
+            for (var si : ai.getGame().getStack()) {
+                var sa = si.getSpellAbility();
+                if (sa == null) continue;
+                Player controller = si.getActivatingPlayer();
+                if (controller == null || controller.equals(ai)) continue;
+                Card host = sa.getHostCard();
+                var api = sa.getApi();
+                boolean buff = (host != null && host.isAura()) || api == ApiType.Attach || api == ApiType.Pump
+                    || api == ApiType.PumpAll || api == ApiType.PutCounter;
+                if (!buff) continue;
+                if (target == null) return true;
+                for (var choices : sa.getAllTargetChoices()) for (var o : choices) if (o == target) return true;
+            }
+        } catch (RuntimeException ignored) { }
+        return false;
+    }
+
+    /** v0.45: public-information attack priority for one opposing player (defender choice). */
+    public int playerPriority(Player target, Player ai) {
+        var game = ai.getGame();
+        int turn = game.getPhaseHandler().getTurn();
+        List<Player> opponents = new ArrayList<>();
+        for (Player p : game.getPlayers()) if (!p.equals(ai) && !p.hasLost()) opponents.add(p);
+        Map<Player, ThreatAssessment.PlayerState> states = new HashMap<>();
+        for (Player p : opponents) states.put(p, publicState(p, ai, turn));
+        double avg = ThreatAssessment.averageMana(states.values());
+        int threat = ThreatAssessment.playerThreat(states.get(target), avg);
+        String targetArchetype = inferArchetype(target);
+        int aiPower = 0;
+        for (Card c : ai.getCardsIn(ZoneType.Battlefield)) if (c.isCreature()) aiPower += Math.max(0, c.getNetPower());
+        String botArchetype = aiPower >= 8 ? "aggro" : "midrange";
+        return ThreatAssessment.attackPriority(threat, botArchetype, target.getLife(), targetArchetype);
+    }
+
+    /** Archetype inferred from public state only: board, open mana and public engines. */
+    private String inferArchetype(Player p) {
+        int creatures = 0, power = 0, interactive = 0, engines = 0;
+        Set<String> publicPieces = new HashSet<>();
+        for (Card c : p.getCardsIn(ZoneType.Battlefield)) {
+            if (c.isFaceDown()) continue;
+            publicPieces.add(key(c.getName()));
+            if (c.isCreature()) { creatures++; power += Math.max(0, c.getNetPower()); }
+            if (ThreatAssessment.drawEngine(c.getName()) || ThreatAssessment.stax(c.getName())) engines++;
+            if (!c.isTapped()) for (var ma : c.getManaAbilities()) {
+                var part = ma.getManaPart();
+                try {
+                    if (part != null && (part.canProduce("U", ma) || part.canProduce("W", ma))) { interactive++; break; }
+                } catch (RuntimeException ignored) { }
+            }
+        }
+        if (power >= 8) return "aggro";
+        if ((interactive >= 2 || engines >= 1) && creatures <= 2) return "control";
+        for (List<Set<String>> combos : catalog.values()) for (Set<String> combo : combos) {
+            int present = 0; for (String piece : combo) if (publicPieces.contains(piece)) present++;
+            if (present >= 2) return "combo";
+        }
+        return "midrange";
+    }
+
+    /** A castable, affordable draw/scry/surveil/dig spell in the AI's hand (pre-land sequencing). */
+    private static boolean hasPreLandSelection(Player ai) {
+        for (Card c : ai.getCardsIn(ZoneType.Hand)) {
+            if (c.isLand()) continue;
+            for (SpellAbility ability : c.getSpellAbilities()) {
+                if (!ability.isSpell()) continue;
+                var api = ability.getApi();
+                if (api != ApiType.Draw && api != ApiType.Scry && api != ApiType.Surveil && api != ApiType.Dig) continue;
+                try {
+                    if (forge.ai.ComputerUtilMana.canPayManaCost(ability, ai, 0, false)) return true;
+                } catch (RuntimeException ignored) { }
+            }
+        }
+        return false;
+    }
+
+    /** Plays that materially affect this turn's combat. */
+    private static boolean combatRelevant(SpellAbility sa, Card card, Player ai) {
+        var api = sa.getApi();
+        if (api == ApiType.Pump || api == ApiType.PumpAll || api == ApiType.Destroy || api == ApiType.DealDamage
+            || api == ApiType.Tap || api == ApiType.TapAll || api == ApiType.PutCounter) return true;
+        if (api == ApiType.ChangeZone) {
+            String dest = sa.getParam("Destination");
+            if (dest != null && (dest.equals("Exile") || dest.equals("Hand"))) return true;
+        }
+        if (api == ApiType.Attach) {
+            for (Card c : ai.getCardsIn(ZoneType.Battlefield)) if (c.isCreature() && !c.isTapped()) return true;
+        }
+        return false;
+    }
+
+    /** Single-target Destroy / damage / exile-or-bounce spells; mass removal uses separate API types. */
+    private static boolean isSingleTargetRemoval(SpellAbility sa, Card card) {
+        if (!sa.isSpell()) return false;
+        var api = sa.getApi();
+        if (api == ApiType.Destroy || api == ApiType.DealDamage) return true;
+        if (api == ApiType.ChangeZone) {
+            String dest = sa.getParam("Destination");
+            return dest != null && (dest.equals("Exile") || dest.equals("Hand") || dest.equals("Library"));
+        }
+        return false;
+    }
+
+    /** Threat score of the removal target, or the best opposing permanent when untargeted; -1 vetoes. */
+    private int bestRemovalTargetScore(SpellAbility sa, Player ai) {
+        Card targeted = null;
+        try {
+            for (Card c : sa.getTargets().getTargetCards()) { targeted = c; break; }
+        } catch (RuntimeException ignored) { }
+        if (targeted != null) {
+            if (targeted.getController() != null && targeted.getController().equals(ai)) return -1;
+            return rawThreatScore(targeted, ai, false);
+        }
+        int best = 0;
+        for (Player p : ai.getGame().getPlayers()) {
+            if (p.equals(ai) || p.hasLost()) continue;
+            for (Card c : p.getCardsIn(ZoneType.Battlefield)) {
+                if (c.isFaceDown()) continue;
+                best = Math.max(best, rawThreatScore(c, ai, false));
+            }
+        }
+        return best;
+    }
+
+    /** Removing one blocker wins this turn: our board is lethal and a blocker stands in the way. */
+    private static boolean tempoWin(forge.game.Game game, Player ai) {
+        if (!game.getPhaseHandler().isPlayerTurn(ai)) return false;
+        int power = 0;
+        for (Card c : ai.getCardsIn(ZoneType.Battlefield)) if (c.isCreature() && !c.isTapped()) power += Math.max(0, c.getNetCombatDamage());
+        if (power == 0) return false;
+        for (Player p : game.getPlayers()) {
+            if (p.equals(ai) || p.hasLost()) continue;
+            if (power < p.getLife()) continue;
+            for (Card c : p.getCardsIn(ZoneType.Battlefield)) if (c.isCreature() && !c.isTapped()) return true;
+        }
+        return false;
+    }
+
+    /** Main 2 overcommit check against each opponent's public board and open mana. */
+    private boolean shouldSandbag(forge.game.Game game, Player ai) {
+        int aiCreatures = 0, aiPower = 0;
+        for (Card c : ai.getCardsIn(ZoneType.Battlefield)) if (c.isCreature()) { aiCreatures++; aiPower += Math.max(0, c.getNetPower()); }
+        boolean protectionUp = false;
+        for (Card c : ai.getCardsIn(ZoneType.Hand)) {
+            for (SpellAbility ability : c.getSpellAbilities()) {
+                var api = ability.getApi();
+                if (api == ApiType.Counter || api == ApiType.Protection) { protectionUp = true; break; }
+            }
+            if (protectionUp) break;
+        }
+        for (Player p : game.getPlayers()) {
+            if (p.equals(ai) || p.hasLost()) continue;
+            int oppPower = 0, open = 0;
+            for (Card c : p.getCardsIn(ZoneType.Battlefield)) {
+                if (c.isFaceDown()) continue;
+                if (c.isCreature()) oppPower += Math.max(0, c.getNetPower());
+                if (!c.isTapped() && (c.isLand() || !c.getManaAbilities().isEmpty())) open++;
+            }
+            boolean lethal = aiPower >= p.getLife();
+            if (ActionSequencer.shouldSandbagOvercommit(aiCreatures, aiPower, oppPower, open,
+                p.getCardsIn(ZoneType.Hand).size(), lethal, protectionUp)) return true;
+        }
+        return false;
     }
 
     /** Commander threat rubric applied to opposing face-up permanents only (removal/target valuation). */
     private int threatBonus(Card card, Player ai, boolean completeCombo) {
+        return ThreatAssessment.evaluatorBonus(rawThreatScore(card, ai, completeCombo));
+    }
+
+    /** Raw 0–100+ threat score for one public permanent, including the +40 stack-buff response. */
+    private int rawThreatScore(Card card, Player ai, boolean completeCombo) {
         var game = card.getGame();
         int turn = game.getPhaseHandler().getTurn();
         List<Player> opponents = new ArrayList<>();
@@ -138,10 +386,11 @@ public final class OpponentStrategy {
         boolean locksBotWin = kind == ThreatAssessment.Kind.STAX && !ownCombos.isEmpty();
         boolean policesLeader = kind == ThreatAssessment.Kind.STAX && archenemy != null && !ownerLeads && opponents.size() > 1;
         int score = ThreatAssessment.permanentThreat(kind, ownerLeads, locksBotWin, policesLeader);
+        // v0.45: a buff on the stack aimed at this permanent makes answering it urgent.
+        if (isTargetedByOpponentBuffOnStack(card, ai)) score += 40;
         boolean otherBucketOne = false;
         for (Player p : opponents) if (!p.equals(owner) && states.get(p).lethalOnBoard()) otherBucketOne = true;
-        score = ThreatAssessment.deferForCombo(score, kind, otherBucketOne);
-        return ThreatAssessment.evaluatorBonus(score);
+        return ThreatAssessment.deferForCombo(score, kind, otherBucketOne);
     }
 
     private static int attackingPower(forge.game.combat.Combat combat, forge.game.Game game) {

@@ -33,6 +33,17 @@ public final class ThreatAssessmentTest {
         eq(false, ThreatAssessment.sandbag(40, 50, 30, 20, false, true), "deploy with protection up");
         eq(true, ThreatAssessment.archenemyDefense(80, 55), "defense mode at +25");
         eq(true, ThreatAssessment.stax("Blood Moon") && ThreatAssessment.drawEngine("Rhystic Study") && ThreatAssessment.apex("Tergrid, God of Fright"), "card lists");
+        // v0.45: removal patience floor boundaries and stack-response threshold crossing
+        eq(true, ThreatAssessment.removalAllowed(65, false, false, false), "65 exactly is removable");
+        eq(false, ThreatAssessment.removalAllowed(64, false, false, false), "64 is held");
+        eq(true, ThreatAssessment.removalAllowed(40, false, true, false), "discarding allows removal");
+        eq(true, ThreatAssessment.removalAllowed(40, false, false, true), "tempo win allows removal");
+        eq(true, ThreatAssessment.evaluatorBonus(25 + 40) > 0, "stack buff crosses the 65 threshold");
+        eq(0, ThreatAssessment.evaluatorBonus(20 + 40), "stack buff alone does not cross from 20");
+        eq(25, ThreatAssessment.attackPriority(15, "midrange", 30, "combo"), "midrange chips high-life combo");
+        eq(15, ThreatAssessment.attackPriority(15, "midrange", 20, "combo"), "no chip below 30 life");
+        eq(false, ThreatAssessment.archenemyDefense(60, 50), "no defense mode below +25");
+        eq(false, ThreatAssessment.sandbag(60, 50, 30, 20, false, false), "leader never sandbags");
         System.out.println(n + " threat assessment checks passed");
     }
 }

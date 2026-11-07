@@ -1,4 +1,11 @@
-# Companion Server v0.42
+# Companion Server v0.45
+
+## v0.45: active Forge strategy vetoes & combat wiring
+- Hard Main Phase 1 and end-step phase vetoes: `OpponentMulliganController.chooseSpellAbilityToPlay()` returns null (passes priority) when `OpponentStrategy.shouldVeto()` rejects the engine's chosen play, and `sequence()` sorts vetoed plays at -10000. Non-haste creatures, non-combat spells and instant-speed draw now wait for Main 2 / the end step before the AI's turn; land drops are never vetoed except to let a pre-land cantrip resolve first.
+- Commander threat-rubric defender assignment and lethal crackback veto in `OpponentMulliganController.declareAttackers()`: attackers are sent at the highest-priority player defender (public state only), and non-vigilance attackers pull back, lowest power first, when a non-lethal attack would die to the crackback.
+- Utility/dork/engine/combo chump-block protection with a <= 4 life floor in `OpponentMulliganController.declareBlockers()`: protected creatures are removed from blocks where they die and the attacker survives, unless the unblocked hit would nearly kill us. Illegal block states are always reverted.
+- Colorless/single-color-first mana tapping in `OpponentMulliganController.playChosenSpellAbility()`: multicolor lands and colors needed by held instant-speed interaction are temporarily masked as tapped while Forge pays, using the proven tap-masking pattern; masks are always restored.
+- Removal patience hard floor: single-target removal against permanents scoring below 65 is vetoed unless it is the end step before our turn, we are discarding, or the removal wins this turn. Opposing auras, equipment and pump spells on the stack add +40 to the target's threat score and +40 to instant removal sequencing.
 
 ## v0.42: play sequencing
 - AI Opponent orders its own legal plays: card selection before the land drop, only combat-relevant spells (haste, pumps, removal) in Main 1, lower-tier threats first into open counter mana, instant-speed draw held for the end step before its turn.

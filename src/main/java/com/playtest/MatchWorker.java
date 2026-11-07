@@ -91,7 +91,7 @@ public final class MatchWorker {
         LobbyPlayerAi seat = new LobbyPlayerAi("opponent", null) {
             @Override public Player createIngamePlayer(Game game, int id) {
                 Player player = new Player(getName(), game, id);
-                OpponentMulliganController controller = new OpponentMulliganController(game, player, this, deck, engines, !strategy.ownCombos.isEmpty());
+                OpponentMulliganController controller = new OpponentMulliganController(game, player, this, deck, engines, !strategy.ownCombos.isEmpty(), strategy);
                 controller.getAi().setUseSimulation(null);
                 player.setFirstController(controller);
                 return player;
