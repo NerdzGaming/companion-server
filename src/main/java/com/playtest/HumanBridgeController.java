@@ -390,7 +390,8 @@ public final class HumanBridgeController extends PlayerControllerAi {
             legal.put(String.valueOf(b.getId()), ok);
         }
         JsonNode a = ask("BLOCK", Map.of("attackers", at, "blockers", bl, "legal", legal));
-        if (a == null) { super.declareBlockers(defender, combat); return; }
+        // v0.39: never let the AI pick blocks for the human; an unanswered prompt means no blocks.
+        if (a == null) { MatchWorker.emit(Map.of("type", "NOTICE", "message", "No block chosen — your creatures did not block.")); return; }
         List<String> refused = new ArrayList<>();
         for (JsonNode b : a.path("blocks")) {
             Card blk = null, atk = null;
