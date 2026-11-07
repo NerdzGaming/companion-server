@@ -52,15 +52,16 @@ public final class MatchWorker {
         GameType type = GameType.valueOf(args[2]);
         GameRules rules = new GameRules(type);
         rules.setAppliedVariants(EnumSet.of(type));
+        OpponentStrategy strategy = args.length > 3
+            ? new OpponentStrategy(JSON.readTree(Path.of(args[3]).toFile())) : new OpponentStrategy(JSON.createObjectNode());
         RegisteredPlayer pa = (type == GameType.Commander ? RegisteredPlayer.forCommander(a) : new RegisteredPlayer(a))
             .setPlayer(websiteSeat());
         RegisteredPlayer pb = (type == GameType.Commander ? RegisteredPlayer.forCommander(b) : new RegisteredPlayer(b))
-            .setPlayer(GamePlayerUtil.createAiPlayer("opponent", 1, ""));
+            .setPlayer(opponentSeat(b, strategy));
         Match match = new Match(rules, List.of(pa, pb), "Nerdz rules match");
         Game game = match.createGame();
         game.setNoGUIUser();
         if (args.length > 3) {
-            OpponentStrategy strategy = new OpponentStrategy(JSON.readTree(Path.of(args[3]).toFile()));
             forge.ai.NerdzStrategy.install(strategy::bonus);
         }
         actionLog = new PublicActionLog(game);
@@ -78,6 +79,25 @@ public final class MatchWorker {
         over.put("winner", draw ? null : game.getOutcome().getWinningLobbyPlayer().getName());
         emit(over);
         System.exit(0);
+    }
+
+    /** Preserve Forge's normal AI profile and decision engine, overriding only opponent mulligans. */
+    static LobbyPlayerAi opponentSeat(Deck deck, OpponentStrategy strategy) {
+        LobbyPlayerAi baseline = (LobbyPlayerAi) GamePlayerUtil.createAiPlayer("opponent", 1, "");
+        java.util.Set<String> engines = new java.util.HashSet<>();
+        strategy.metadata.forEach((name, metadata) -> { if (metadata.changer()) engines.add(name); });
+        strategy.ownCombos.forEach(engines::addAll);
+        LobbyPlayerAi seat = new LobbyPlayerAi("opponent", null) {
+            @Override public Player createIngamePlayer(Game game, int id) {
+                Player player = new Player(getName(), game, id);
+                OpponentMulliganController controller = new OpponentMulliganController(game, player, this, deck, engines, !strategy.ownCombos.isEmpty());
+                controller.getAi().setUseSimulation(null);
+                player.setFirstController(controller);
+                return player;
+            }
+        };
+        seat.setAiProfile(baseline.getAiProfile());
+        return seat;
     }
 
     /** Lobby player whose in-game controller asks the website for decisions. */

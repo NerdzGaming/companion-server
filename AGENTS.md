@@ -2,3 +2,4 @@
 - Docker applies patch-strategy.py to the exact pinned upstream before building; mismatches must fail rather than silently omit scoring hooks.
 - OpponentStrategy reads human cards only from face-up public battlefield zones; its own hand and command zone are permitted, but libraries and the human deck are never strategic inputs.
 - Strategy bonuses only adjust engine evaluation; preserve legality, timing, casting, targeting and payment checks.
+- OpeningHandPolicy and OpponentMulliganController use submitted-deck aggregate statistics minus the known AI hand, never game-library contents; keep mulligan debug output private to prevent exposing bottomed cards.

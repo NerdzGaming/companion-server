@@ -1,4 +1,13 @@
-# Companion Server v0.35
+# Companion Server v0.40
+
+## v0.40: competitive opponent mulligans
+- Opening hands use the supplied 0–100 rubric, play/draw roles, colour-pip assignment, early action, pregame/engine bonuses and keep thresholds 65/55/40/25/0.
+- London redraws remain seven cards; the AI scores its virtual kept hand and bottoms once on Keep. Forge owns format/free-mulligan return counts; thresholds decay by actual redraw count.
+- Bottoming follows excess lands (3, or 2 for low-curve aggro), off-colour spells, 5+ mana drops, redundant legends, then low-impact cards, preferring the highest-scoring virtual hand within each priority.
+- Own archetype comes from the submitted deck's average spell cost, creature/interaction ratios and validated combo relationships. Opposing archetype starts unknown: the human deck is never read.
+- Colour probabilities use aggregate submitted-deck source counts minus the known drawn hand, not either game library. Conditional/fetch lands are conservative estimates; these checks never grant casting permission or replace engine payments.
+- Debug scores and bottoming reasons stay in private worker stderr, not the public action log. No human advisor or browser/solo changes.
+- Upload v0.40 to Render and start a NEW match; keep MAX_MATCHES=4 and your transport secret unchanged. Pure policy tests are separate from full Docker compilation and live-match validation.
 
 ## v0.35: commander moves, public reveals, counters, convoke
 - Commander leaving to graveyard/exile/hand/library asks the owner whether to send it to the command zone.
