@@ -56,6 +56,13 @@ public final class PublicActionLog {
     @Subscribe public void life(GameEventPlayerLivesChanged e) { add("state", e.player().getName() + " life " + e.oldLives() + " → " + e.newLives() + "."); }
     // Counter costs and damage must refresh loyalty even before the next priority prompt.
     @Subscribe public void counters(GameEventCardCounters e) { MatchWorker.emit(MatchWorker.snapshot(game)); }
+    @Subscribe public void playerCounters(GameEventPlayerCounters e) {
+        if (e.type() == null || e.receiver() == null) { MatchWorker.emit(MatchWorker.snapshot(game)); return; }
+        int delta = e.amount() - e.oldValue();
+        if (delta == 0) { MatchWorker.emit(MatchWorker.snapshot(game)); return; }
+        String kind = e.type().getName();
+        add("state", e.receiver().getName() + (delta > 0 ? " gets " + delta : " loses " + (-delta)) + " " + kind + " counter" + (Math.abs(delta) == 1 ? "" : "s") + " (now " + e.amount() + ").");
+    }
     @Subscribe public void land(GameEventLandPlayed e) { add("state", e.player().getName() + " plays " + name(e.land()) + "."); }
     @Subscribe public void cast(GameEventSpellAbilityCast e) {
         // Do not include targetDescription or arbitrary stack text: either may contain hidden identities.

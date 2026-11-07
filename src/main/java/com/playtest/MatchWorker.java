@@ -126,6 +126,12 @@ public final class MatchWorker {
             side.put("life", p.getLife());
             side.put("manaPool", manaPool(p));
             side.put("handCount", p.getCardsIn(ZoneType.Hand).size());
+            // v0.44: public player counters (energy, poison, experience, rad, tickets).
+            try {
+                Map<String, Integer> pc = new LinkedHashMap<>();
+                for (var e : p.getCounters().entrySet()) if (e.getCount() > 0) pc.put(e.getElement().getName(), e.getCount());
+                side.put("counters", pc);
+            } catch (RuntimeException ignored) { }
             side.put("libraryCount", p.getCardsIn(ZoneType.Library).size());
             Card top = visibleLibraryTop(p, viewer);
             if (top != null) side.put("libraryTop", Map.of("id", top.getId(), "name", top.getName(), "typeLine", top.getType().toString()));
