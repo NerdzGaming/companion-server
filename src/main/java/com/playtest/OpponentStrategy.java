@@ -97,7 +97,7 @@ public final class OpponentStrategy {
                     if (c.isFaceDown() || c.isTapped()) continue;
                     for (var ma : c.getManaAbilities()) {
                         var part = ma.getManaPart();
-                        if (part != null && (part.canProduce("U") || part.canProduce("W") || part.canProduce("B") || part.canProduce("R"))) { open++; break; }
+                        if (part != null && (part.canProduce("U", ma) || part.canProduce("W", ma) || part.canProduce("B", ma) || part.canProduce("R", ma))) { open++; break; }
                     }
                 }
                 if (ActionSequencer.interactionRisk(open, p.getCardsIn(ZoneType.Hand).size())) risk++;
