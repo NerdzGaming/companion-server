@@ -10,6 +10,7 @@ import forge.game.GameRules;
 import forge.game.GameType;
 import forge.game.Match;
 import forge.game.card.Card;
+import forge.game.card.CardPlayOption;
 import forge.game.player.Player;
 import forge.game.player.RegisteredPlayer;
 import forge.game.zone.ZoneType;
@@ -51,15 +52,25 @@ public final class MatchWorker {
         GameType type = GameType.valueOf(args[2]);
         GameRules rules = new GameRules(type);
         rules.setAppliedVariants(EnumSet.of(type));
+        OpponentStrategy strategy = args.length > 3
+            ? new OpponentStrategy(JSON.readTree(Path.of(args[3]).toFile())) : new OpponentStrategy(JSON.createObjectNode());
+        startingLife = args.length > 4 ? Integer.parseInt(args[4]) : 0;
+        freeMulligans = args.length > 5 ? Integer.parseInt(args[5]) : (type == GameType.Commander ? 1 : 0);
         RegisteredPlayer pa = (type == GameType.Commander ? RegisteredPlayer.forCommander(a) : new RegisteredPlayer(a))
             .setPlayer(websiteSeat());
         RegisteredPlayer pb = (type == GameType.Commander ? RegisteredPlayer.forCommander(b) : new RegisteredPlayer(b))
-            .setPlayer(GamePlayerUtil.createAiPlayer("opponent", 1, ""));
+            .setPlayer(opponentSeat(b, strategy));
+        if (startingLife > 0) { pa.setStartingLife(startingLife); pb.setStartingLife(startingLife); }
         Match match = new Match(rules, List.of(pa, pb), "Nerdz rules match");
         Game game = match.createGame();
         game.setNoGUIUser();
+        if (args.length > 3) {
+            forge.ai.NerdzStrategy.install(strategy::bonus);
+            forge.ai.NerdzStrategy.installSequencer(strategy::sequence);
+        }
         actionLog = new PublicActionLog(game);
         game.subscribeToEvents(actionLog);
+        forge.game.NerdzReveal.install(HumanBridgeController::publicReveal);
         emit(Map.of("type", "STATUS", "message", "Game started"));
 
         // Snapshots are produced on the game thread by public events and before prompts.
@@ -73,6 +84,28 @@ public final class MatchWorker {
         over.put("winner", draw ? null : game.getOutcome().getWinningLobbyPlayer().getName());
         emit(over);
         System.exit(0);
+    }
+
+    /** Preserve Forge's normal AI profile and decision engine, overriding only opponent mulligans. */
+    /** v0.46: per-format starting life (0 = engine default) and free London mulligans. */
+    static int startingLife = 0, freeMulligans = 0;
+
+    static LobbyPlayerAi opponentSeat(Deck deck, OpponentStrategy strategy) {
+        LobbyPlayerAi baseline = (LobbyPlayerAi) GamePlayerUtil.createAiPlayer("opponent", 1, "");
+        java.util.Set<String> engines = new java.util.HashSet<>();
+        strategy.metadata.forEach((name, metadata) -> { if (metadata.changer()) engines.add(name); });
+        strategy.ownCombos.forEach(engines::addAll);
+        LobbyPlayerAi seat = new LobbyPlayerAi("opponent", null) {
+            @Override public Player createIngamePlayer(Game game, int id) {
+                Player player = new Player(getName(), game, id);
+                OpponentMulliganController controller = new OpponentMulliganController(game, player, this, deck, engines, !strategy.ownCombos.isEmpty(), strategy);
+                controller.getAi().setUseSimulation(null);
+                player.setFirstController(controller);
+                return player;
+            }
+        };
+        seat.setAiProfile(baseline.getAiProfile());
+        return seat;
     }
 
     /** Lobby player whose in-game controller asks the website for decisions. */
@@ -100,20 +133,51 @@ public final class MatchWorker {
             side.put("life", p.getLife());
             side.put("manaPool", manaPool(p));
             side.put("handCount", p.getCardsIn(ZoneType.Hand).size());
+            // v0.44: public player counters (energy, poison, experience, rad, tickets).
+            try {
+                Map<String, Integer> pc = new LinkedHashMap<>();
+                for (var e : p.getCounters().entrySet()) if (e.getCount() > 0) pc.put(e.getElement().getName(), e.getCount());
+                // v0.46: public commander damage taken from each opposing commander (21 is lethal).
+                try {
+                    for (Player o : players) if (o != p) for (Card cmd : o.getCommanders()) {
+                        int d = p.getCommanderDamage(cmd);
+                        if (d > 0) pc.put("Cmdr dmg · " + cmd.getName(), d);
+                    }
+                } catch (RuntimeException ignored) { }
+                side.put("counters", pc);
+            } catch (RuntimeException ignored) { }
             side.put("libraryCount", p.getCardsIn(ZoneType.Library).size());
             Card top = visibleLibraryTop(p, viewer);
             if (top != null) side.put("libraryTop", Map.of("id", top.getId(), "name", top.getName(), "typeLine", top.getType().toString()));
             side.put("battlefield", cards(p, ZoneType.Battlefield, true));
             side.put("graveyard", cards(p, ZoneType.Graveyard, false));
-            side.put("exile", cards(p, ZoneType.Exile, false));
+            side.put("exile", exileCards(p, viewer));
             side.put("command", cards(p, ZoneType.Command, false));
             // Fog of war: only the website player's own hand is named.
             if (p.getName().equals("player")) side.put("hand", cards(p, ZoneType.Hand, false));
             s.put(p.getName(), side);
         }
-        List<String> stack = new ArrayList<>();
-        game.getStack().forEach(si -> stack.add(visibleName(si.getSpellAbility().getHostCard())));
+        // v0.30: full stack entries (top first in engine order) so the table can show the whole card, its controller and targets.
+        List<Map<String, Object>> stack = new ArrayList<>();
+        game.getStack().forEach(si -> {
+            var sa = si.getSpellAbility();
+            Card host = sa.getHostCard();
+            Map<String, Object> e = new LinkedHashMap<>();
+            e.put("id", si.getId());
+            e.put("cardId", host == null ? -1 : host.getId());
+            e.put("name", host == null ? "Ability" : visibleName(host));
+            e.put("controller", si.getActivatingPlayer() == null ? "" : si.getActivatingPlayer().getName());
+            e.put("spell", sa.isSpell());
+            e.put("copy", sa.isCopied() || (host != null && host.isCopiedSpell()));
+            String text = si.getStackDescription();
+            e.put("text", text == null ? "" : text);
+            List<String> targets = new ArrayList<>();
+            try { for (var t : sa.getAllTargetChoices()) for (var o : t) targets.add(o instanceof Card tc ? visibleName(tc) : String.valueOf(o)); } catch (RuntimeException ignored) { }
+            e.put("targets", targets);
+            stack.add(e);
+        });
         s.put("stack", stack);
+        try { s.put("stormCount", game.getStack().getSpellsCastThisTurn().size()); } catch (RuntimeException ignored) { }
         s.put("actionLog", actionLog == null ? List.of() : actionLog.snapshot());
         return s;
     }
@@ -132,7 +196,50 @@ public final class MatchWorker {
             if (withState) { m.put("tapped", c.isTapped());
                 if (!c.isFaceDown() && c.isPlaneswalker()) m.put("loyalty", c.getCurrentLoyalty());
                 if (c.isCreature()) { m.put("power", c.getNetPower()); m.put("toughness", c.getNetToughness()); if (c.hasFirstStrike() || c.hasDoubleStrike()) m.put("firstStrike", true); }
-                if (c.getEntityAttachedTo() instanceof Card host) m.put("attachedTo", host.getId()); }
+                if (c.getEntityAttachedTo() instanceof Card host) m.put("attachedTo", host.getId());
+                // v0.35: lore (Urza's Saga), burden (The One Ring), +1/+1 and every other counter on the battlefield.
+                try {
+                    Map<String, Integer> counters = new LinkedHashMap<>();
+                    for (var e : c.getCounters().entrySet()) if (e.getCount() > 0) counters.put(e.getElement().getName(), e.getCount());
+                    if (!counters.isEmpty()) m.put("counters", counters);
+                } catch (RuntimeException ignored) { } }
+            list.add(m);
+        }
+        return list;
+    }
+
+    /**
+     * Exile entries plus the viewer's play grants (impulse draws, Ragavan-style theft,
+     * adventures on the stack's other side) and counters (suspend time counters), so the
+     * table can shelve cards the player may still cast from exile.
+     */
+    static List<Map<String, Object>> exileCards(Player p, Player viewer) {
+        List<Map<String, Object>> list = new ArrayList<>();
+        for (Card c : new ArrayList<>(p.getCardsIn(ZoneType.Exile))) {
+            if (c.isImmutable()) continue;
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("id", c.getId());
+            m.put("name", visibleName(c));
+            if (!c.isFaceDown()) {
+                m.put("token", c.isToken());
+                m.put("typeLine", c.getType().toString());
+            }
+            if (viewer != null && !c.isFaceDown()) {
+                try {
+                    List<CardPlayOption> grants = c.mayPlay(viewer);
+                    if (!grants.isEmpty()) {
+                        m.put("playable", true);
+                        for (CardPlayOption o : grants) {
+                            if (o.getPayManaCost() == CardPlayOption.PayManaCost.NO) { m.put("freeCast", true); break; }
+                        }
+                    }
+                } catch (RuntimeException ignored) { }
+            }
+            try {
+                Map<String, Integer> counters = new LinkedHashMap<>();
+                for (var e : c.getCounters().entrySet()) if (e.getCount() > 0) counters.put(e.getElement().getName(), e.getCount());
+                if (!counters.isEmpty()) m.put("counters", counters);
+            } catch (RuntimeException ignored) { }
             list.add(m);
         }
         return list;

@@ -24,10 +24,10 @@ import java.util.concurrent.ConcurrentHashMap;
 public final class App {
     static final ObjectMapper JSON = new ObjectMapper();
     static final int MAX_DECK = 65536;
-    static final int MAX_MATCHES = Integer.parseInt(System.getenv().getOrDefault("MAX_MATCHES", "1"));
+    static final int MAX_MATCHES = Integer.parseInt(System.getenv().getOrDefault("MAX_MATCHES", "2"));
 
     static final class MatchSession {
-        final String id; final String socketToken; volatile long tokenExpires; final String playerDeck; final String aiDeck; final String format;
+        final String id; final String socketToken; volatile long tokenExpires; final String playerDeck; final String aiDeck; final String format; String strategy = "{}"; int startingLife = 0; int freeMulligans = 0;
         final Set<WsContext> sockets = ConcurrentHashMap.newKeySet();
         volatile Process worker; volatile long emptySince; volatile String lastState; volatile String lastPrompt; volatile long lastSeen = System.currentTimeMillis(); final long created = System.currentTimeMillis();
         MatchSession(String id, String p, String a, String f) { this.id = id; socketToken = TransportAccess.newToken(); tokenExpires = System.currentTimeMillis() + 5 * 60_000; playerDeck = p; aiDeck = a; format = f; }
@@ -53,6 +53,12 @@ public final class App {
             }
             String id = UUID.randomUUID().toString();
             MatchSession m = new MatchSession(id, p, a, format);
+            String strategy = JSON.writeValueAsString(body.path("strategy"));
+            if (strategy.length() > 1_000_000) { ctx.status(400).json(Map.of("error", "Strategy payload too large")); return; }
+            m.strategy = strategy;
+            // v0.46: format rules from the site (life, free mulligans), bounded to sane values.
+            m.startingLife = Math.max(0, Math.min(200, body.path("startingLife").asInt(0)));
+            m.freeMulligans = Math.max(0, Math.min(1, body.path("freeMulligans").asInt(format.equals("Commander") ? 1 : 0)));
             MATCHES.put(id, m);
             ctx.header("Cache-Control", "no-store");
             ctx.json(Map.of("matchId", id, "socketToken", m.socketToken, "status", "created"));
@@ -70,7 +76,8 @@ public final class App {
                 if (m == null || !TransportAccess.validTicket(ctx.queryParam("ticket"), m.socketToken, m.tokenExpires, System.currentTimeMillis())) { ctx.send("{\"type\":\"ERROR\",\"message\":\"Unknown match\"}"); ctx.closeSession(); return; }
                 ctx.session.setIdleTimeout(java.time.Duration.ofMinutes(15));
                 synchronized (m) {
-                    if (!m.sockets.isEmpty()) { ctx.closeSession(); return; }
+                    // A rejoining browser replaces its own stale socket (refresh leaves a half-open one).
+                    for (var old : new java.util.ArrayList<>(m.sockets)) { m.sockets.remove(old); try { old.closeSession(); } catch (Exception ignored) { } }
                     m.sockets.add(ctx); m.lastSeen = System.currentTimeMillis();
                 }
                 if (m.lastState != null) ctx.send(m.lastState);
@@ -99,7 +106,7 @@ public final class App {
             ws.onClose(ctx -> {
                 MatchSession m = MATCHES.get(ctx.pathParam("id"));
                 if (m != null) m.sockets.remove(ctx);
-                if (m != null && m.sockets.isEmpty()) { m.emptySince = System.currentTimeMillis(); m.tokenExpires = m.emptySince + 120_000; }
+                if (m != null && m.sockets.isEmpty()) { m.emptySince = System.currentTimeMillis(); m.tokenExpires = m.emptySince + REJOIN_MS; }
             });
         });
 
@@ -109,8 +116,8 @@ public final class App {
                 try { Thread.sleep(60_000); } catch (InterruptedException e) { return; }
                 long now = System.currentTimeMillis();
                 MATCHES.values().removeIf(m -> {
-                    // Two minutes covers a reconnect; unconnected sessions expire after 15.
-                    boolean dead = (m.sockets.isEmpty() && (m.emptySince > 0 ? now - m.emptySince > 120_000 : now - m.created > 15 * 60_000))
+                    // Five minutes allows rejoining after a refresh; unconnected sessions expire after 15.
+                    boolean dead = (m.sockets.isEmpty() && (m.emptySince > 0 ? now - m.emptySince > REJOIN_MS : now - m.created > 15 * 60_000))
                         || (m.worker != null && !m.worker.isAlive()) || abandoned(m, now);
                     if (dead && m.worker != null) m.worker.destroyForcibly();
                     return dead;
@@ -133,7 +140,13 @@ public final class App {
 
     /** Heartbeats arrive every 25s; a socket silent for 75s is a closed tab or dropped connection. */
     static final long STALE_MS = 75_000;
-    static boolean abandoned(MatchSession m, long now) { return now - m.lastSeen > STALE_MS; }
+    static final long REJOIN_MS = 5 * 60_000;
+    /** A disconnected game keeps its seat for rejoining, but yields after a minute if another player needs the table. */
+    static final long YIELD_MS = 60_000;
+    static boolean abandoned(MatchSession m, long now) { return !m.sockets.isEmpty() && now - m.lastSeen > STALE_MS; }
+    static boolean reclaimable(MatchSession m, long now) {
+        return abandoned(m, now) || !m.worker.isAlive() || (m.sockets.isEmpty() && m.emptySince > 0 && now - m.emptySince > YIELD_MS);
+    }
 
     static long running() { return MATCHES.values().stream().filter(x -> x.worker != null && x.worker.isAlive()).count(); }
 
@@ -141,14 +154,15 @@ public final class App {
         // Reclaim slots held by matches nobody is connected to before refusing a new one.
         // Also reclaim matches whose browser went silent (closed tab, refresh, lost connection).
         long now0 = System.currentTimeMillis();
-        MATCHES.values().stream().filter(x -> x != m && x.worker != null && (x.sockets.isEmpty() || abandoned(x, now0) || !x.worker.isAlive())).toList().forEach(App::end);
-        // Wait up to 30s for a slot instead of failing immediately.
-        long deadline = System.currentTimeMillis() + 30_000;
-        if (running() >= MAX_MATCHES) broadcast(m, "{\"type\":\"STATUS\",\"message\":\"Waiting for a free game table\"}");
+        if (running() >= MAX_MATCHES) MATCHES.values().stream().filter(x -> x != m && x.worker != null && reclaimable(x, now0)).toList().forEach(App::end);
+        // Wait up to 90s for a slot instead of failing immediately.
+        long deadline = System.currentTimeMillis() + 90_000;
         while (running() >= MAX_MATCHES && System.currentTimeMillis() < deadline && !m.sockets.isEmpty()) {
+            long waiting = MATCHES.values().stream().filter(x -> x.worker == null && !x.sockets.isEmpty() && x.created <= m.created).count();
+            broadcast(m, "{\"type\":\"STATUS\",\"queue\":" + Math.max(1, waiting) + ",\"tables\":" + MAX_MATCHES + ",\"message\":\"All " + MAX_MATCHES + " game tables are full. You are #" + Math.max(1, waiting) + " in line.\"}");
             try { Thread.sleep(2000); } catch (InterruptedException e) { return; }
             long now = System.currentTimeMillis();
-            MATCHES.values().stream().filter(x -> x != m && x.worker != null && (x.sockets.isEmpty() || abandoned(x, now) || !x.worker.isAlive())).toList().forEach(App::end);
+            MATCHES.values().stream().filter(x -> x != m && x.worker != null && reclaimable(x, now)).toList().forEach(App::end);
         }
         if (m.sockets.isEmpty()) return;
         if (running() >= MAX_MATCHES) { broadcast(m, "{\"type\":\"ERROR\",\"message\":\"Server busy: another game is in progress\"}"); return; }
@@ -156,11 +170,12 @@ public final class App {
             Path job = Files.createTempDirectory("match-");
             Path a = job.resolve("player.dck"), b = job.resolve("ai.dck");
             Files.writeString(a, m.playerDeck); Files.writeString(b, m.aiDeck);
+            Path strategy = job.resolve("strategy.json"); Files.writeString(strategy, m.strategy);
             String workerCp = System.getenv().getOrDefault("WORKER_CP", "/app/server.jar:/app/forge/forge-headless.jar:/app/lib/*");
             List<String> cmd = List.of(Path.of(System.getProperty("java.home"), "bin", "java").toString(),
-                "-Xmx" + System.getenv().getOrDefault("WORKER_HEAP", "1200m"), "-Djava.awt.headless=true", "-Duser.home=" + job,
+                "-Xmx" + System.getenv().getOrDefault("WORKER_HEAP", "900m"), "-Djava.awt.headless=true", "-Duser.home=" + job,
                 "--add-opens=java.base/java.lang=ALL-UNNAMED", "--add-opens=java.base/java.util=ALL-UNNAMED",
-                "-cp", workerCp, MatchWorker.class.getName(), a.toString(), b.toString(), m.format);
+                "-cp", workerCp, MatchWorker.class.getName(), a.toString(), b.toString(), m.format, strategy.toString(), String.valueOf(m.startingLife), String.valueOf(m.freeMulligans));
             m.worker = new ProcessBuilder(cmd).redirectError(ProcessBuilder.Redirect.INHERIT).start();
             broadcast(m, "{\"type\":\"STATUS\",\"message\":\"Forge is loading cards (about 30-60s)\"}");
             Thread relay = new Thread(() -> {

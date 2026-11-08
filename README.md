@@ -1,4 +1,10 @@
-# Companion Server v0.47
+# Companion Server v0.48
+
+## v0.48: complete choice context and effect-scoped public reveals
+- Show the full remembered/delayed/temporary look batch alongside legal choices; nonmatching cards are display-only. Never scan another library to reconstruct a batch.
+- Observe public reveals at the engine's GameAction boundary, including the human player's reveals. Log each full public batch once with its actual owner and zone; private looks and scry remain private.
+- Website reveal notices use the affected player's name and exclude private peeks.
+- Deploy this companion with the matching website and start a new match. Full pinned engine compilation and live gameplay still require deployment verification.
 
 ## v0.47: Render build fix — pinned Forge Cost has no isNoCost(); paid-trigger detection uses hasCost() (non-free cost parts)
 

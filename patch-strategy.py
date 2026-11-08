@@ -42,3 +42,38 @@ simulation = root / 'simulation/GameStateEvaluator.java'
 replace(simulation, '            return evaluateLand(c);', '            return evaluateLand(c) + forge.ai.NerdzStrategy.bonus(c);')
 replace(simulation, '        return value;\n    }\n\n    public static int evaluateLand', '        return value + forge.ai.NerdzStrategy.bonus(c);\n    }\n\n    public static int evaluateLand')
 print('Applied seven pinned engine strategy hooks')
+
+# Public reveal boundaries live in GameAction, not in individual viewer callbacks.
+game_root = Path(sys.argv[1]) / 'forge-game/src/main/java/forge/game'
+(game_root / 'NerdzReveal.java').write_text('''package forge.game;
+import forge.game.card.CardCollectionView;
+import forge.game.player.Player;
+import forge.game.zone.ZoneType;
+import forge.game.spellability.SpellAbility;
+/** Per-match observer; private revealTo/controller looks never call this hook. */
+public final class NerdzReveal {
+    public interface Observer { void reveal(CardCollectionView cards, ZoneType zone, Player owner); }
+    private static Observer observer;
+    private NerdzReveal() { }
+    public static void install(Observer value) { observer = value; }
+    public static void publish(CardCollectionView cards, ZoneType zone, Player owner) {
+        if (observer != null && cards != null && !cards.isEmpty()) observer.reveal(cards, zone, owner);
+    }
+    /** Portal reveal-and-select policy; plain private peeks without a reveal choice stay private. */
+    public static void choiceBatch(CardCollectionView cards, ZoneType zone, Player owner, SpellAbility sa) {
+        for (SpellAbility part = sa; part != null; part = part.getSubAbility()) {
+            if ("True".equalsIgnoreCase(part.getParamOrDefault("Reveal", ""))) {
+                owner.getGame().getAction().reveal(cards, zone, owner, false, null);
+                return;
+            }
+        }
+    }
+}
+''')
+replace(game_root / 'GameAction.java',
+    'public void reveal(CardCollectionView cards, ZoneType zt, Player cardOwner, boolean dontRevealToOwner, String messagePrefix, boolean msgAddSuffix) {',
+    'public void reveal(CardCollectionView cards, ZoneType zt, Player cardOwner, boolean dontRevealToOwner, String messagePrefix, boolean msgAddSuffix) {\n        NerdzReveal.publish(cards, zt, cardOwner);')
+print('Applied effect-scoped public reveal hook')
+replace(game_root / 'ability/effects/PeekAndRevealEffect.java',
+    '            params.put("Revealed", peekCards);',
+    '            params.put("Revealed", peekCards);\n            forge.game.NerdzReveal.choiceBatch(peekCards, srcZone, zoneToPeek, sa);')
