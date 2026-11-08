@@ -1,4 +1,9 @@
-# Companion Server v0.48
+# Companion Server v0.50
+
+## v0.50: your triggered abilities (attack triggers especially) always resolve
+- Every trigger you control goes through your decisions instead of Forge AI's trigger evaluator, so mandatory attack triggers can no longer be silently declined.
+- Optional "you may" triggers you accepted are not re-evaluated by AI when they resolve; unanswered optional prompts default to resolving.
+- Trigger effects resolve with your own cost payments instead of AI cost heuristics.
 
 ## v0.48: complete choice context and effect-scoped public reveals
 - Show the full remembered/delayed/temporary look batch alongside legal choices; nonmatching cards are display-only. Never scan another library to reconstruct a batch.

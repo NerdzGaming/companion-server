@@ -827,13 +827,69 @@ public final class HumanBridgeController extends PlayerControllerAi {
     }
 
     /** True when this bridge should pick for the trigger itself instead of Forge AI's doTrigger. */
+    /**
+     * v0.50: every trigger the human controls goes through the bridge (Charm/TargetingPlayer keep the
+     * engine's own chooser). Previously mandatory untargeted attack triggers fell back to Forge AI's
+     * doTrigger, which could veto them so they never reached the stack or never applied.
+     */
     private boolean humanTrigger(SpellAbility sa) {
-        return sa.getApi() != ApiType.Charm && !sa.hasParam("TargetingPlayer")
-            && (chainTargets(sa) || sa.isOptionalTrigger() || costedTrigger(sa) || reflexive(sa));
+        return sa.getApi() != ApiType.Charm && !sa.hasParam("TargetingPlayer");
+    }
+
+    /** Triggers the player already accepted when they went on the stack; resolution must not re-ask Forge AI. */
+    private final Set<SpellAbility> acceptedTriggers = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+
+    private void markAccepted(SpellAbility sa) {
+        if (acceptedTriggers.size() > 512) acceptedTriggers.clear();
+        acceptedTriggers.add(sa);
+        if (sa instanceof WrappedAbility w && w.getWrappedAbility() != null) acceptedTriggers.add(w.getWrappedAbility());
+    }
+
+    /** True when the trigger's "you may" was already answered by the player, consuming the mark. */
+    static boolean consumeAccepted(Set<SpellAbility> accepted, SpellAbility wrapper, SpellAbility inner) {
+        boolean hit = accepted.remove(wrapper);
+        if (inner != null) hit = accepted.remove(inner) || hit;
+        return hit;
+    }
+
+    /**
+     * v0.50: WrappedAbility.resolve() asks the decider's confirmTrigger. The inherited AI version clears
+     * targets and re-runs doTrigger, silently fizzling triggers (attack triggers especially) the player chose.
+     */
+    @Override
+    public boolean confirmTrigger(WrappedAbility wrapper) {
+        if (wrapper.isMandatory()) return true;
+        if (consumeAccepted(acceptedTriggers, wrapper, wrapper.getWrappedAbility())) return true;
+        JsonNode a = ask("CONFIRM", Map.of("source", src(wrapper), "message", "Use triggered ability: " + wrapper.getStackDescription() + "?"));
+        if (a == null) return true; // inactivity fallback: optional triggers default to resolving, never AI veto
+        return a.path("yes").asBoolean(false);
+    }
+
+    /**
+     * v0.50: resolving trigger effects for the player. The AI version pays with AiCostDecision and gates on AI
+     * affordability heuristics, which could abort before AbilityUtils.resolve ever ran.
+     */
+    @Override
+    public void playSpellAbilityNoStack(SpellAbility effectSA, boolean canSetupTargets) {
+        if (effectSA.getActivatingPlayer() == null) effectSA.setActivatingPlayer(getPlayer());
+        if (effectSA.getActivatingPlayer() != getPlayer()) { super.playSpellAbilityNoStack(effectSA, canSetupTargets); return; }
+        if (canSetupTargets && chainTargets(effectSA) && !humanTargets(effectSA)) return;
+        resolveHumanNoStack(effectSA);
+    }
+
+    private boolean resolveHumanNoStack(SpellAbility sa) {
+        Cost cost = sa.getPayCosts();
+        if (hasCost(cost)) {
+            if (!canPayHumanCost(cost, sa, true)) return false;
+            if (!new CostPayment(cost, sa).payComputerCosts(new HumanCostDecision(getPlayer(), sa, true))) return false;
+        }
+        AbilityUtils.resolve(sa);
+        return true;
     }
 
     /** v0.46: "you may pay {E}{E}{E}" style trigger costs — the player decides, not Forge AI. */
     private static boolean costedTrigger(SpellAbility sa) {
+        if (sa instanceof WrappedAbility w && w.getWrappedAbility() != null && hasCost(w.getWrappedAbility().getPayCosts())) return true;
         return hasCost(sa.getPayCosts());
     }
 
@@ -855,20 +911,25 @@ public final class HumanBridgeController extends PlayerControllerAi {
             JsonNode a = ask("CONFIRM", Map.of("source", src(sa), "message", "Use triggered ability: " + sa.getStackDescription() + "?"));
             if (a != null && !a.path("yes").asBoolean(false)) return false;
         } else if (costedTrigger(sa)) {
-            Cost c = sa.getPayCosts();
+            Cost c = sa instanceof WrappedAbility w && w.getWrappedAbility() != null && hasCost(w.getWrappedAbility().getPayCosts())
+                ? w.getWrappedAbility().getPayCosts() : sa.getPayCosts();
             String what = hasCost(c) ? "Pay " + c.toSimpleString() + " for " : "Use ";
             JsonNode a = ask("CONFIRM", Map.of("source", src(sa), "message", what + sa.getStackDescription() + "?"));
             if (a != null && !a.path("yes").asBoolean(false)) return false;
         }
-        if (!chainTargets(sa)) return true;
-        return humanTargets(sa);
+        if (chainTargets(sa) && !humanTargets(sa)) return false;
+        markAccepted(sa);
+        return true;
     }
 
     @Override
     public void orderAndPlaySimultaneousSa(List<SpellAbility> activePlayerSAs) {
         for (SpellAbility sa : orderSimultaneousSa(activePlayerSAs)) {
             if (sa.isTrigger() && !sa.isCopied() && humanTrigger(sa)) {
-                if (prepareHumanTrigger(sa)) ComputerUtil.playStack(sa, getPlayer(), getGame());
+                if (prepareHumanTrigger(sa) && !ComputerUtil.playStack(sa, getPlayer(), getGame())) {
+                    // Trigger wrappers cost nothing to put on the stack; never let an AI affordability check drop one.
+                    getGame().getStack().add(sa);
+                }
             } else {
                 super.orderAndPlaySimultaneousSa(new ArrayList<>(List.of(sa)));
             }
@@ -879,7 +940,7 @@ public final class HumanBridgeController extends PlayerControllerAi {
     public boolean playTrigger(Card host, WrappedAbility wrapperAbility, boolean isMandatory) {
         if (!humanTrigger(wrapperAbility)) return super.playTrigger(host, wrapperAbility, isMandatory);
         if (!prepareHumanTrigger(wrapperAbility)) return false;
-        return ComputerUtil.playNoStack(wrapperAbility.getActivatingPlayer(), wrapperAbility, getGame(), true);
+        return resolveHumanNoStack(wrapperAbility);
     }
 
     /** Engine bounds apply; estimates must not force X to zero or cap legal large values. */
