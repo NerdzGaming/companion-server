@@ -1,4 +1,6 @@
-# Companion Server v0.46
+# Companion Server v0.47
+
+## v0.47: Render build fix — pinned Forge Cost has no isNoCost(); paid-trigger detection uses hasCost() (non-free cost parts)
 
 ## v0.46: look-at choices (Break Out, Dig) show every looked-at card; ineligible ones are dimmed and unselectable
 ## v0.46 also: format-based starting life and free mulligans, commander damage badges, Guide of Souls-style paid and reflexive triggers are your choice

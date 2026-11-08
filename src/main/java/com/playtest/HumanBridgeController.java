@@ -792,8 +792,12 @@ public final class HumanBridgeController extends PlayerControllerAi {
 
     /** v0.46: "you may pay {E}{E}{E}" style trigger costs — the player decides, not Forge AI. */
     private static boolean costedTrigger(SpellAbility sa) {
-        Cost c = sa.getPayCosts();
-        return c != null && !c.isNoCost();
+        return hasCost(sa.getPayCosts());
+    }
+
+    /** Pinned Forge Cost has no isNoCost(); a cost exists when it has non-free parts. */
+    private static boolean hasCost(Cost c) {
+        return c != null && !c.getCostParts().isEmpty() && !c.isFree();
     }
 
     /** v0.46: reflexive "when you do" (Guide of Souls) — the player chooses the reflexive target. */
@@ -810,7 +814,7 @@ public final class HumanBridgeController extends PlayerControllerAi {
             if (a != null && !a.path("yes").asBoolean(false)) return false;
         } else if (costedTrigger(sa)) {
             Cost c = sa.getPayCosts();
-            String what = c != null && !c.isNoCost() ? "Pay " + c.toSimpleString() + " for " : "Use ";
+            String what = hasCost(c) ? "Pay " + c.toSimpleString() + " for " : "Use ";
             JsonNode a = ask("CONFIRM", Map.of("source", src(sa), "message", what + sa.getStackDescription() + "?"));
             if (a != null && !a.path("yes").asBoolean(false)) return false;
         }
