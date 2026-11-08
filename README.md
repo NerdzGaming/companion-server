@@ -1,4 +1,9 @@
-# Companion Server v0.50
+# Companion Server v0.51
+
+## v0.51: shared public reveal batches and named life bars
+- Explicit public reveals from either seat carry the full batch, public audience and stable ID, and remain in bounded snapshot history so missed broadcasts and reconnects do not lose them. Private looks/scry remain private; the casting player's selection layout and legal choices are unchanged.
+- AI display names are chosen once per match from Spike, Timmy and Johnny. Internal player/opponent keys stay unchanged; the website life bars use the signed-in player's account name.
+- Deploy this companion and publish the website, then start a new match. Live card-specific verification is still required after deployment.
 
 ## v0.50: your triggered abilities (attack triggers especially) always resolve
 - Every trigger you control goes through your decisions instead of Forge AI's trigger evaluator, so mandatory attack triggers can no longer be silently declined.

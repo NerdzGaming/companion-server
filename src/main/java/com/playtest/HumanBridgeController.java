@@ -1486,7 +1486,7 @@ public final class HumanBridgeController extends PlayerControllerAi {
         if (MatchWorker.actionLog != null) MatchWorker.actionLog.revealed(owner.getName(), zone == null ? null : zoneLabel(zone), names);
         Map<String, Object> ev = new LinkedHashMap<>();
         ev.put("type", "REVEAL"); ev.put("player", owner.getName()); ev.put("zone", zone == null ? "" : zoneLabel(zone)); ev.put("cards", shown);
-        MatchWorker.emit(ev);
+        MatchWorker.publishReveal(ev);
     }
 
     /** v0.35: Convoke / Improvise — the player picks which untapped permanents help pay. */

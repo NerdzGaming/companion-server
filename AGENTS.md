@@ -1,5 +1,7 @@
 - Keep strategy isolated to the opponent worker; never change HumanBridgeController decisions or freeform solo playtest.
 - Observe public reveals at GameAction, not viewer callbacks; full chooser context remains separate from legal options so private looks and ineligible cards cannot become legal selections.
+- Retain bounded, ID-keyed public reveal history in snapshots so reconnects preserve both-seat visibility without exposing private looks.
+- Keep match display names separate from stable player/opponent engine identifiers so naming cannot change legality, visibility or log ownership.
 - Docker applies patch-strategy.py to the exact pinned upstream before building; mismatches must fail rather than silently omit scoring hooks.
 - OpponentStrategy reads human cards only from face-up public battlefield zones; its own hand and command zone are permitted, but libraries and the human deck are never strategic inputs.
 - Strategy bonuses only adjust engine evaluation; preserve legality, timing, casting, targeting and payment checks.
