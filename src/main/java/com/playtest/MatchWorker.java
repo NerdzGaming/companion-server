@@ -54,10 +54,13 @@ public final class MatchWorker {
         rules.setAppliedVariants(EnumSet.of(type));
         OpponentStrategy strategy = args.length > 3
             ? new OpponentStrategy(JSON.readTree(Path.of(args[3]).toFile())) : new OpponentStrategy(JSON.createObjectNode());
+        startingLife = args.length > 4 ? Integer.parseInt(args[4]) : 0;
+        freeMulligans = args.length > 5 ? Integer.parseInt(args[5]) : (type == GameType.Commander ? 1 : 0);
         RegisteredPlayer pa = (type == GameType.Commander ? RegisteredPlayer.forCommander(a) : new RegisteredPlayer(a))
             .setPlayer(websiteSeat());
         RegisteredPlayer pb = (type == GameType.Commander ? RegisteredPlayer.forCommander(b) : new RegisteredPlayer(b))
             .setPlayer(opponentSeat(b, strategy));
+        if (startingLife > 0) { pa.setStartingLife(startingLife); pb.setStartingLife(startingLife); }
         Match match = new Match(rules, List.of(pa, pb), "Nerdz rules match");
         Game game = match.createGame();
         game.setNoGUIUser();
@@ -83,6 +86,9 @@ public final class MatchWorker {
     }
 
     /** Preserve Forge's normal AI profile and decision engine, overriding only opponent mulligans. */
+    /** v0.46: per-format starting life (0 = engine default) and free London mulligans. */
+    static int startingLife = 0, freeMulligans = 0;
+
     static LobbyPlayerAi opponentSeat(Deck deck, OpponentStrategy strategy) {
         LobbyPlayerAi baseline = (LobbyPlayerAi) GamePlayerUtil.createAiPlayer("opponent", 1, "");
         java.util.Set<String> engines = new java.util.HashSet<>();
@@ -130,6 +136,13 @@ public final class MatchWorker {
             try {
                 Map<String, Integer> pc = new LinkedHashMap<>();
                 for (var e : p.getCounters().entrySet()) if (e.getCount() > 0) pc.put(e.getElement().getName(), e.getCount());
+                // v0.46: public commander damage taken from each opposing commander (21 is lethal).
+                try {
+                    for (Player o : players) if (o != p) for (Card cmd : o.getCommanders()) {
+                        int d = p.getCommanderDamage(cmd);
+                        if (d > 0) pc.put("Cmdr dmg · " + cmd.getName(), d);
+                    }
+                } catch (RuntimeException ignored) { }
                 side.put("counters", pc);
             } catch (RuntimeException ignored) { }
             side.put("libraryCount", p.getCardsIn(ZoneType.Library).size());

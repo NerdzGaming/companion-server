@@ -100,13 +100,13 @@ public final class OpponentMulliganController extends PlayerControllerAi {
         play = firstPlayer == null || firstPlayer.equals(getPlayer());
         var hand = getPlayer().getCardsIn(ZoneType.Hand);
         var decision = OpeningHandPolicy.decide(describeHand(hand), profile, play, redraws,
-            Math.max(0, cardsToReturn), OpeningHandPolicy.Archetype.UNKNOWN);
+            Math.max(0, redraws - MatchWorker.freeMulligans), OpeningHandPolicy.Archetype.UNKNOWN);
         // Private debug output stays on worker stderr; never publish bottomed names or hand analysis.
         System.err.println("AI mulligan " + redraws + " " + profile.archetype() + ": " + decision.score()
             + "/" + decision.threshold() + " " + (decision.keep() ? "keep" : "redraw") + " " + decision.reasons());
         if (decision.keep()) {
             // Forge supplies the authoritative, format-adjusted return count at this callback.
-            for (Card card : chooseBottom(hand, Math.max(0, cardsToReturn))) getPlayer().getGame().getAction().moveToLibrary(card, -1, null);
+            for (Card card : chooseBottom(hand, Math.max(0, redraws - MatchWorker.freeMulligans))) getPlayer().getGame().getAction().moveToLibrary(card, -1, null);
         } else { redraws++; }
         return decision.keep();
     }

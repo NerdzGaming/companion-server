@@ -1,4 +1,8 @@
-# Companion Server v0.45
+# Companion Server v0.46
+
+## v0.46: look-at choices (Break Out, Dig) show every looked-at card; ineligible ones are dimmed and unselectable
+## v0.46 also: format-based starting life and free mulligans, commander damage badges, Guide of Souls-style paid and reflexive triggers are your choice
+
 
 ## v0.45: active Forge strategy vetoes & combat wiring
 - Hard Main Phase 1 and end-step phase vetoes: `OpponentMulliganController.chooseSpellAbilityToPlay()` returns null (passes priority) when `OpponentStrategy.shouldVeto()` rejects the engine's chosen play, and `sequence()` sorts vetoed plays at -10000. Non-haste creatures, non-combat spells and instant-speed draw now wait for Main 2 / the end step before the AI's turn; land drops are never vetoed except to let a pre-land cantrip resolve first.

@@ -27,7 +27,7 @@ public final class App {
     static final int MAX_MATCHES = Integer.parseInt(System.getenv().getOrDefault("MAX_MATCHES", "2"));
 
     static final class MatchSession {
-        final String id; final String socketToken; volatile long tokenExpires; final String playerDeck; final String aiDeck; final String format; String strategy = "{}";
+        final String id; final String socketToken; volatile long tokenExpires; final String playerDeck; final String aiDeck; final String format; String strategy = "{}"; int startingLife = 0; int freeMulligans = 0;
         final Set<WsContext> sockets = ConcurrentHashMap.newKeySet();
         volatile Process worker; volatile long emptySince; volatile String lastState; volatile String lastPrompt; volatile long lastSeen = System.currentTimeMillis(); final long created = System.currentTimeMillis();
         MatchSession(String id, String p, String a, String f) { this.id = id; socketToken = TransportAccess.newToken(); tokenExpires = System.currentTimeMillis() + 5 * 60_000; playerDeck = p; aiDeck = a; format = f; }
@@ -56,6 +56,9 @@ public final class App {
             String strategy = JSON.writeValueAsString(body.path("strategy"));
             if (strategy.length() > 1_000_000) { ctx.status(400).json(Map.of("error", "Strategy payload too large")); return; }
             m.strategy = strategy;
+            // v0.46: format rules from the site (life, free mulligans), bounded to sane values.
+            m.startingLife = Math.max(0, Math.min(200, body.path("startingLife").asInt(0)));
+            m.freeMulligans = Math.max(0, Math.min(1, body.path("freeMulligans").asInt(format.equals("Commander") ? 1 : 0)));
             MATCHES.put(id, m);
             ctx.header("Cache-Control", "no-store");
             ctx.json(Map.of("matchId", id, "socketToken", m.socketToken, "status", "created"));
@@ -172,7 +175,7 @@ public final class App {
             List<String> cmd = List.of(Path.of(System.getProperty("java.home"), "bin", "java").toString(),
                 "-Xmx" + System.getenv().getOrDefault("WORKER_HEAP", "900m"), "-Djava.awt.headless=true", "-Duser.home=" + job,
                 "--add-opens=java.base/java.lang=ALL-UNNAMED", "--add-opens=java.base/java.util=ALL-UNNAMED",
-                "-cp", workerCp, MatchWorker.class.getName(), a.toString(), b.toString(), m.format, strategy.toString());
+                "-cp", workerCp, MatchWorker.class.getName(), a.toString(), b.toString(), m.format, strategy.toString(), String.valueOf(m.startingLife), String.valueOf(m.freeMulligans));
             m.worker = new ProcessBuilder(cmd).redirectError(ProcessBuilder.Redirect.INHERIT).start();
             broadcast(m, "{\"type\":\"STATUS\",\"message\":\"Forge is loading cards (about 30-60s)\"}");
             Thread relay = new Thread(() -> {
