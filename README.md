@@ -1,4 +1,9 @@
-# Companion Server v0.51
+# Companion Server v0.52
+
+## v0.52: alternative mana colours share one tap
+- Payment choices carry exact permanent identity and tap-cost metadata. Selecting a tap ability reserves that permanent across every colour row, including grouped copies of dual lands.
+- The companion validates the entire manual selection before activating any source, rejecting duplicate keys or two tap abilities from the same permanent. Multi-mana output from one activation and non-tapping abilities remain engine-controlled.
+- Deploy this companion with the website and start a new match; real-game verification remains required.
 
 ## v0.51: shared public reveal batches and named life bars
 - Explicit public reveals from either seat carry the full batch, public audience and stable ID, and remain in bounded snapshot history so missed broadcasts and reconnects do not lose them. Private looks/scry remain private; the casting player's selection layout and legal choices are unchanged.
