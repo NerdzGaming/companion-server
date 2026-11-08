@@ -70,6 +70,8 @@ public final class MatchWorker {
         }
         actionLog = new PublicActionLog(game);
         game.subscribeToEvents(actionLog);
+        forge.game.NerdzReveal.install(HumanBridgeController::publicReveal);
+        forge.game.NerdzReveal.installChoiceHook(HumanBridgeController::setChoiceBatch);
         emit(Map.of("type", "STATUS", "message", "Game started"));
 
         // Snapshots are produced on the game thread by public events and before prompts.

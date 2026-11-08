@@ -89,6 +89,25 @@ public final class HumanBridgeController extends PlayerControllerAi {
 
     public HumanBridgeController(Game game, Player p, LobbyPlayer lp) { super(game, p, lp); }
 
+    private final List<Card> temporaryLook = new ArrayList<>();
+    private final List<Card> recentLook = new ArrayList<>();
+    /** Full looked-at batch captured by the engine before filtering; one match per JVM. */
+    private static volatile List<Card> activeChoiceBatch = List.of();
+    public static void setChoiceBatch(CardCollectionView cards, ZoneType zone, Player owner, SpellAbility sa) {
+        List<Card> copy = new ArrayList<>(); for (Card c : cards) copy.add(c); activeChoiceBatch = copy;
+    }
+
+    @Override public void tempShowCards(Iterable<Card> cards) {
+        temporaryLook.clear();
+        for (Card c : cards) temporaryLook.add(c);
+        super.tempShowCards(cards);
+    }
+
+    @Override public void endTempShowCards() {
+        temporaryLook.clear();
+        super.endTempShowCards();
+    }
+
     @Override public boolean isAI() { return false; }
 
     /** Emits a prompt and waits for the matching answer; null on timeout. */
@@ -127,6 +146,9 @@ public final class HumanBridgeController extends PlayerControllerAi {
 
     @Override
     public List<SpellAbility> chooseSpellAbilityToPlay() {
+        activeChoiceBatch = List.of();
+        recentLook.clear();
+        temporaryLook.clear();
         Player me = getPlayer();
         // Same checkpoint Forge's desktop client takes before each priority prompt; barriers (draws, reveals, opponent actions) stay engine-owned.
         forge.game.undo.UndoManager undo = me.getGame().getUndoManager();
@@ -456,7 +478,7 @@ public final class HumanBridgeController extends PlayerControllerAi {
 
     // ---------- shared choice helpers ----------
 
-    private String key(Object o) {
+    private static String key(Object o) {
         if (o instanceof SpellAbility) return "s" + System.identityHashCode(o);
         if (o instanceof Card c) return "c" + c.getId();
         if (o instanceof Player p) return "p" + p.getId();
@@ -509,8 +531,10 @@ public final class HumanBridgeController extends PlayerControllerAi {
             for (Card c : g.getValue()) { all.putIfAbsent(c.getId(), c); ids.add(c.getId()); }
             groups.add(Map.of("key", g.getKey(), "label", g.getKey(), "cardIds", ids));
         }
+        Set<Integer> eligible = new HashSet<>(all.keySet());
+        for (Card c : choiceContext(sa, null)) all.putIfAbsent(c.getId(), c);
         List<Map<String, Object>> cards = new ArrayList<>();
-        for (Card c : all.values()) { Map<String, Object> m = card(c); m.put("typeLine", c.getType().toString()); cards.add(m); }
+        for (Card c : all.values()) { Map<String, Object> m = card(c); m.put("typeLine", c.getType().toString()); if (!eligible.contains(c.getId())) m.put("unavailable", true); cards.add(m); }
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("title", title == null ? "" : title); body.put("source", src(sa)); body.put("optional", isOptional);
         body.put("groups", groups); body.put("cards", cards);
@@ -539,7 +563,7 @@ public final class HumanBridgeController extends PlayerControllerAi {
 
     /** Asks the player to pick between min and max of the options; null = no valid answer (caller falls back to AI). */
     private <T> List<T> pick(String kind, String title, SpellAbility sa, List<T> options, int min, int max) {
-        return pick(kind, title, sa, options, min, max, null);
+        return pick(kind, title, sa, options, min, max, "CHOOSE".equals(kind) ? choiceContext(sa, null) : null);
     }
 
     /** v0.46: every looked-at card (Dig/Break Out) is shown; ineligible ones are display-only and never accepted. */
@@ -551,11 +575,29 @@ public final class HumanBridgeController extends PlayerControllerAi {
         return out;
     }
 
+    /** Only explicit effect memory or an active UI batch; never read a library to fill missing context. */
+    private List<Card> choiceContext(SpellAbility sa, DelayedReveal delayed) {
+        List<Card> context = revealContext(delayed);
+        if (context.isEmpty()) context.addAll(activeChoiceBatch);
+        if (context.isEmpty()) context.addAll(temporaryLook);
+        if (sa != null && sa.getHostCard() != null
+                && sa.getParamOrDefault("Choices", "").contains("IsRemembered")) {
+            for (Object remembered : sa.getHostCard().getRemembered())
+                if (remembered instanceof Card c) context.add(c);
+        }
+        if (context.isEmpty() && sa != null && (sa.getApi() == ApiType.Dig || sa.getApi() == ApiType.DigMultiple)) context.addAll(recentLook);
+        Map<Integer, Card> unique = new LinkedHashMap<>();
+        for (Card c : context) unique.putIfAbsent(c.getId(), c);
+        // Context only adds display cards; legal options stay as offered by the engine.
+        return new ArrayList<>(unique.values());
+    }
+
     private <T> List<T> pick(String kind, String title, SpellAbility sa, List<T> options, int min, int max, List<Card> context) {
         List<Map<String, Object>> opts = new ArrayList<>();
         Set<String> valid = new HashSet<>();
-        for (T o : options) { opts.add(entity(o)); valid.add(key(o)); }
-        if (context != null) for (Card c : context) if (!valid.contains(key(c))) { Map<String, Object> m = entity(c); m.put("unavailable", true); opts.add(m); }
+        for (T o : options) valid.add(key(o));
+        List<Object> display = RevealChoices.display(context == null ? new ArrayList<>() : new ArrayList<Object>(context), new ArrayList<Object>(options), HumanBridgeController::key);
+        for (Object o : display) { Map<String, Object> m = entity(o); if (!valid.contains(key(o))) m.put("unavailable", true); opts.add(m); }
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("title", title == null ? "" : title); body.put("source", src(sa));
         body.put("min", min); body.put("max", max); body.put("options", opts);
@@ -565,7 +607,7 @@ public final class HumanBridgeController extends PlayerControllerAi {
             Set<String> chosen = keys(a);
             List<T> out = new ArrayList<>();
             for (T o : options) if (chosen.contains(key(o))) out.add(o);
-            if (out.size() >= min && out.size() <= max && out.size() == chosen.size()) return out;
+            if (RevealChoices.valid(valid, chosen, min, max) && out.size() == chosen.size()) { if (context != null && !context.isEmpty()) activeChoiceBatch = List.of(); return out; }
             MatchWorker.emit(Map.of("type", "NOTICE", "message", "That selection is not valid. Please choose again."));
         }
     }
@@ -924,10 +966,10 @@ public final class HumanBridgeController extends PlayerControllerAi {
     @Override
     public <T extends GameEntity> T chooseSingleEntityForEffect(FCollectionView<T> optionList, DelayedReveal delayedReveal, SpellAbility sa, String title, boolean isOptional, Player targetedPlayer, Map<String, Object> params) {
         List<T> list = new ArrayList<>(optionList);
-        List<Card> seen = revealContext(delayedReveal);
-        if (list.isEmpty()) { if (delayedReveal != null) reveal(delayedReveal); return null; }
+        List<Card> seen = choiceContext(sa, delayedReveal);
+        if (list.isEmpty() && seen.isEmpty()) return null;
         if (list.size() == 1 && !isOptional && seen.size() <= 1) return list.get(0);
-        List<T> got = pick("CHOOSE", title, sa, list, isOptional ? 0 : 1, 1, seen);
+        List<T> got = pick("CHOOSE", title, sa, list, list.isEmpty() || isOptional ? 0 : 1, Math.min(1, list.size()), seen);
         if (got == null) return super.chooseSingleEntityForEffect(optionList, delayedReveal, sa, title, isOptional, targetedPlayer, params);
         return got.isEmpty() ? null : got.get(0);
     }
@@ -935,9 +977,9 @@ public final class HumanBridgeController extends PlayerControllerAi {
     @Override
     public <T extends GameEntity> List<T> chooseEntitiesForEffect(FCollectionView<T> optionList, int min, int max, DelayedReveal delayedReveal, SpellAbility sa, String title, Player targetedPlayer, Map<String, Object> params) {
         List<T> list = new ArrayList<>(optionList);
-        List<Card> seen = revealContext(delayedReveal);
+        List<Card> seen = choiceContext(sa, delayedReveal);
         if (list.size() <= min && seen.size() <= list.size()) { if (delayedReveal != null) reveal(delayedReveal); return list; }
-        List<T> got = pick("CHOOSE", title, sa, list, min, Math.min(max, list.size()), seen);
+        List<T> got = pick("CHOOSE", title, sa, list, Math.min(min, list.size()), Math.min(max, list.size()), seen);
         return got != null ? got : super.chooseEntitiesForEffect(optionList, min, max, delayedReveal, sa, title, targetedPlayer, params);
     }
 
@@ -946,8 +988,9 @@ public final class HumanBridgeController extends PlayerControllerAi {
         List<Card> list = new ArrayList<>();
         for (Card c : sourceList) list.add(c);
         int lo = isOptional ? 0 : Math.min(min, list.size());
-        if (list.size() <= lo) return new CardCollection(list);
-        List<Card> got = pick("CHOOSE", title, sa, list, lo, Math.min(max, list.size()));
+        List<Card> seen = choiceContext(sa, null);
+        if (list.size() <= lo && seen.size() <= list.size()) return new CardCollection(list);
+        List<Card> got = pick("CHOOSE", title, sa, list, lo, Math.min(max, list.size()), seen);
         return got != null ? new CardCollection(got) : super.chooseCardsForEffect(sourceList, sa, title, min, max, isOptional, params);
     }
 
@@ -975,11 +1018,11 @@ public final class HumanBridgeController extends PlayerControllerAi {
     @Override
     public Card chooseSingleCardForZoneChange(ZoneType destination, List<ZoneType> origin, SpellAbility sa, CardCollection fetchList, DelayedReveal delayedReveal, String selectPrompt, boolean isOptional, Player decider) {
         if (decider != getPlayer()) return super.chooseSingleCardForZoneChange(destination, origin, sa, fetchList, delayedReveal, selectPrompt, isOptional, decider);
-        if (delayedReveal != null) reveal(delayedReveal);
         List<Card> list = new ArrayList<>(fetchList);
-        if (list.isEmpty()) return null;
-        if (list.size() == 1 && !isOptional) return list.get(0);
-        List<Card> got = pick("CHOOSE", selectPrompt, sa, list, isOptional ? 0 : 1, 1);
+        List<Card> seen = choiceContext(sa, delayedReveal);
+        if (list.isEmpty() && seen.isEmpty()) return null;
+        if (list.size() == 1 && !isOptional && seen.size() <= 1) return list.get(0);
+        List<Card> got = pick("CHOOSE", selectPrompt, sa, list, list.isEmpty() || isOptional ? 0 : 1, Math.min(1, list.size()), seen);
         if (got == null) return super.chooseSingleCardForZoneChange(destination, origin, sa, fetchList, null, selectPrompt, isOptional, decider);
         return got.isEmpty() ? null : got.get(0);
     }
@@ -989,8 +1032,9 @@ public final class HumanBridgeController extends PlayerControllerAi {
     public List<Card> chooseCardsForZoneChange(ZoneType destination, List<ZoneType> origin, SpellAbility sa, CardCollection fetchList, int min, int max, DelayedReveal delayedReveal, String selectPrompt, Player decider) {
         if (decider != getPlayer()) return super.chooseCardsForZoneChange(destination, origin, sa, fetchList, min, max, delayedReveal, selectPrompt, decider);
         List<Card> list = new ArrayList<>(fetchList);
-        if (list.isEmpty()) return new ArrayList<>();
-        List<Card> got = pick("CHOOSE", selectPrompt, sa, list, Math.min(min, list.size()), Math.min(max, list.size()));
+        List<Card> seen = choiceContext(sa, delayedReveal);
+        if (list.isEmpty() && seen.isEmpty()) return new ArrayList<>();
+        List<Card> got = pick("CHOOSE", selectPrompt, sa, list, Math.min(min, list.size()), Math.min(max, list.size()), seen);
         return got == null ? super.chooseCardsForZoneChange(destination, origin, sa, fetchList, min, max, delayedReveal, selectPrompt, decider) : got;
     }
 
@@ -1346,7 +1390,7 @@ public final class HumanBridgeController extends PlayerControllerAi {
         return a.path("yes").asBoolean(false);
     }
 
-    /** v0.35: cards revealed by the opponent become public — logged by name and announced on the table. */
+    /** Viewer callbacks may be private; public visibility is established at GameAction instead. */
     @Override
     public void reveal(CardCollectionView cards, ZoneType zone, Player owner, String messagePrefix, boolean addSuffix) {
         super.reveal(cards, zone, owner, messagePrefix, addSuffix);
@@ -1365,14 +1409,15 @@ public final class HumanBridgeController extends PlayerControllerAi {
 
     private void announceReveal(List<Card> cards, ZoneType zone, Player owner) {
         if (cards.isEmpty() || owner == null) return;
-        if (owner == getPlayer()) {
-            List<Map<String, Object>> mine = new ArrayList<>();
-            for (Card c : cards) mine.add(card(c));
-            Map<String, Object> ev = new LinkedHashMap<>();
-            ev.put("type", "REVEAL"); ev.put("player", owner.getName()); ev.put("zone", zone == null ? "" : zoneLabel(zone)); ev.put("cards", mine); ev.put("private", true);
-            MatchWorker.emit(ev);
-            return;
-        }
+        recentLook.clear();
+        recentLook.addAll(cards);
+        List<Map<String, Object>> mine = new ArrayList<>();
+        for (Card c : cards) mine.add(card(c));
+        MatchWorker.emit(Map.of("type", "REVEAL", "player", owner.getName(), "zone", zone == null ? "" : zoneLabel(zone), "cards", mine, "private", true));
+    }
+
+    static void publicReveal(CardCollectionView cards, ZoneType zone, Player owner) {
+        if (cards.isEmpty() || owner == null) return;
         List<String> names = new ArrayList<>();
         List<Map<String, Object>> shown = new ArrayList<>();
         for (Card c : cards) { if (c.isFaceDown()) continue; names.add(c.getName()); shown.add(card(c)); }

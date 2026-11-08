@@ -54,6 +54,9 @@ import forge.game.spellability.SpellAbility;
 public final class NerdzReveal {
     public interface Observer { void reveal(CardCollectionView cards, ZoneType zone, Player owner); }
     private static Observer observer;
+    public interface ChoiceBatchHook { void onBatch(CardCollectionView cards, ZoneType zone, Player owner, SpellAbility sa); }
+    private static ChoiceBatchHook choiceHook;
+    public static void installChoiceHook(ChoiceBatchHook value) { choiceHook = value; }
     private NerdzReveal() { }
     public static void install(Observer value) { observer = value; }
     public static void publish(CardCollectionView cards, ZoneType zone, Player owner) {
@@ -61,6 +64,7 @@ public final class NerdzReveal {
     }
     /** Portal reveal-and-select policy; plain private peeks without a reveal choice stay private. */
     public static void choiceBatch(CardCollectionView cards, ZoneType zone, Player owner, SpellAbility sa) {
+        if (choiceHook != null && cards != null && !cards.isEmpty()) choiceHook.onBatch(cards, zone, owner, sa);
         for (SpellAbility part = sa; part != null; part = part.getSubAbility()) {
             if ("True".equalsIgnoreCase(part.getParamOrDefault("Reveal", ""))) {
                 owner.getGame().getAction().reveal(cards, zone, owner, false, null);
