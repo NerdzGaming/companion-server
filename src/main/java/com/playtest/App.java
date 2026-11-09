@@ -101,6 +101,9 @@ public final class App {
                     var in = m.worker.getOutputStream();
                     in.write((JSON.writeValueAsString(msg) + "\n").getBytes(StandardCharsets.UTF_8));
                     in.flush();
+                    // The pending decision was answered; don't resend it to sockets that connect later.
+                    String answeredId = msg.path("promptId").asText("");
+                    if (type.equals("ACT") && !answeredId.isEmpty() && m.lastPrompt != null && m.lastPrompt.contains("\"" + answeredId + "\"")) m.lastPrompt = null;
                 }
             });
             ws.onClose(ctx -> {
