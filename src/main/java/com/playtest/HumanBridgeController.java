@@ -764,10 +764,15 @@ public final class HumanBridgeController extends PlayerControllerAi {
             }
         }
         List<Map<String, Object>> opts = new ArrayList<>();
+        Map<String, Integer> offeredSources = new LinkedHashMap<>(), tapSources = new LinkedHashMap<>();
         for (int i = 0; i < sources.size(); i++) {
             SpellAbility ma = sources.get(i);
             Map<String, Object> m = new LinkedHashMap<>(entity(ma.getHostCard()));
             m.put("key", "m" + i);
+            boolean hasTapCost = ma.getPayCosts() != null && ma.getPayCosts().hasTapCost();
+            m.put("hasTapCost", hasTapCost);
+            offeredSources.put("m" + i, ma.getHostCard().getId());
+            if (hasTapCost) tapSources.put("m" + i, ma.getHostCard().getId());
             String d = ma.getDescription();
             boolean multi = ma.getHostCard().getManaAbilities().size() > 1;
             m.put("label", ma.getHostCard().getName() + (multi && d != null && !d.isBlank() ? " — " + d : ""));
@@ -798,6 +803,10 @@ public final class HumanBridgeController extends PlayerControllerAi {
         while (true) {
             a = ask("MANA", body);
             if (a == null) return null;
+            if (!a.path("auto").asBoolean(false) && !ManaPaymentChoices.validSourceSelection(offeredSources, tapSources, keys(a))) {
+                MatchWorker.emit(Map.of("type", "NOTICE", "message", "Choose one tap ability per mana source. A land cannot tap for both colour options at once."));
+                continue;
+            }
             Map<String, Integer> offered = new LinkedHashMap<>(), selected = new LinkedHashMap<>();
             for (Map<String, Object> shard : shards) offered.put((String) shard.get("key"), (Integer) shard.get("count"));
             boolean valid = !a.has("phyrexian") || a.path("phyrexian").isObject();
@@ -1219,11 +1228,33 @@ public final class HumanBridgeController extends PlayerControllerAi {
 
     @Override
     public CardCollection chooseCardsToDiscardFrom(Player p, SpellAbility sa, CardCollection validCards, int min, int max, CardCollectionView visibleToChooser) {
-        if (p != getPlayer()) return super.chooseCardsToDiscardFrom(p, sa, validCards, min, max, visibleToChooser);
-        List<Card> list = new ArrayList<>(validCards);
-        if (list.size() <= min) return new CardCollection(list);
-        List<Card> got = pick("CHOOSE", "Choose cards to discard", sa, list, min, Math.min(max, list.size()));
+        // Forge calls the chooser's controller; p owns the affected hand, not the decision.
+        List<Card> visible = visibleToChooser == null ? new ArrayList<>(validCards) : new ArrayList<>(visibleToChooser);
+        var plan = DiscardChoices.regular(new ArrayList<>(validCards), visible, min, max);
+        if (plan.visible().isEmpty() && plan.valid().isEmpty()) return new CardCollection();
+        String title = p == getPlayer() ? "Choose cards to discard" : "Choose cards for " + p.getName() + " to discard";
+        List<Card> got = pick("CHOOSE", title, sa, plan.valid(), plan.min(), plan.max(), plan.visible());
         return got != null ? new CardCollection(got) : super.chooseCardsToDiscardFrom(p, sa, validCards, min, max, visibleToChooser);
+    }
+
+    /** Thirst for Knowledge / Wrench Mind: the affected human chooses either payment. */
+    @Override
+    public CardCollectionView chooseCardsToDiscardUnlessType(int num, CardCollectionView hand, String[] types, SpellAbility sa) {
+        List<Card> cards = new ArrayList<>(hand);
+        if (cards.isEmpty()) return new CardCollection();
+        List<Card> matching = new ArrayList<>();
+        var restriction = forge.game.card.CardPredicates.restriction(types, sa.getActivatingPlayer(), sa.getHostCard(), sa);
+        for (Card c : cards) if (restriction.test(c)) matching.add(c);
+        boolean discardMatching = false;
+        if (!matching.isEmpty()) {
+            List<String> modes = pickStrings("Choose how to discard", sa,
+                List.of("Discard one matching card (" + String.join(" or ", types) + ")", "Discard " + Math.min(num, cards.size()) + " cards"), 1, 1);
+            if (modes == null) return super.chooseCardsToDiscardUnlessType(num, hand, types, sa);
+            discardMatching = modes.get(0).startsWith("Discard one matching card");
+        }
+        var plan = DiscardChoices.unlessType(cards, matching, num, discardMatching);
+        List<Card> got = pick("CHOOSE", "Choose cards to discard", sa, plan.valid(), plan.min(), plan.max(), plan.visible());
+        return got != null ? new CardCollection(got) : super.chooseCardsToDiscardUnlessType(num, hand, types, sa);
     }
 
     @Override

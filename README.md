@@ -1,4 +1,9 @@
-# Companion Server v0.52
+# Companion Server v0.53
+
+## v0.53: human discard choices, including opponent hands
+- Thoughtseize, Duress, Inquisition, Grief and related effects ask the actual human chooser instead of treating the affected opponent as the decision maker. The full effect-permitted hand stays visible, with ineligible cards disabled, including when only one discard is legal.
+- Thirst for Knowledge, Wrench Mind and other discard-unless-type effects let the human choose one matching card or the required number of cards, then select those cards. Opponent decisions and freeform Playtest are unchanged; existing explicit timeout behavior is retained.
+- Deploy this companion to Render and start a new match. Live card-specific verification and full engine compilation remain required after deployment.
 
 ## v0.52: alternative mana colours share one tap
 - Payment choices carry exact permanent identity and tap-cost metadata. Selecting a tap ability reserves that permanent across every colour row, including grouped copies of dual lands.

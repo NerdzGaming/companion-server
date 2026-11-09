@@ -1,10 +1,23 @@
 package com.playtest;
 
 import java.util.Map;
+import java.util.Collection;
+import java.util.HashSet;
 
 /** Protocol validation independent of Forge state; the engine offers the actual bounds. */
 public final class ManaPaymentChoices {
     private ManaPaymentChoices() { }
+    /** Validate the whole batch before activating anything; one source pays {T} once. */
+    public static boolean validSourceSelection(Map<String, Integer> offered, Map<String, Integer> tapSources, Collection<String> selected) {
+        var keys = new HashSet<String>();
+        var tapped = new HashSet<Integer>();
+        for (String key : selected) {
+            if (!offered.containsKey(key) || !keys.add(key)) return false;
+            Integer source = tapSources.get(key);
+            if (source != null && !tapped.add(source)) return false;
+        }
+        return true;
+    }
     public static boolean shouldAnnounceX(boolean copied, boolean wrapper, boolean hasXCost, String definition) {
         return !copied && !wrapper && hasXCost && (definition.isEmpty() || "Count$xPaid".equals(definition));
     }
