@@ -1,4 +1,10 @@
-# Companion Server v0.54
+# Companion Server v0.54.2
+
+## v0.54.2: commander choices after mana abilities
+- Standalone mana activations return to the engine's priority loop before the next action. Food Chain's exile cost, sacrifice-for-mana abilities and other commander zone changes now reach the normal state-based commander decision before another activation or cast.
+- Exile/graveyard choices occur after the complete ability resolves; costs and mana output are unchanged. Mana sources used while paying for a spell do not interrupt payment with premature state-based actions.
+- The engine supplies the actual moved commander to its owner's confirmation, including commanders whose current face has no spell ability. Choosing to leave it in exile/graveyard remains supported; hand/library replacements and the AI owner's decisions remain engine-owned.
+- Deploy this package to Render and start a new match. Full Docker compilation and live Food Chain verification remain deployment checks; regular solo Playtest is unchanged.
 
 ## v0.54: opponent removal, combat sequencing and constructed defaults
 - Follow-up: initialize missing mana-ability activators before conditional production checks (including Sacred Foundry); existing activators remain unchanged. The matching website detaches retired socket callbacks and cancels stale retries to prevent duplicate reconnect loops.

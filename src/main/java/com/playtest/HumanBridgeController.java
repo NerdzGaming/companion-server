@@ -222,13 +222,9 @@ public final class HumanBridgeController extends PlayerControllerAi {
             }
             if (!sa.canPlay()) continue;
             if (sa.isManaAbility()) {
-                if (activateHumanMana(sa)) {
-                    MatchWorker.recordManaAction(sa);
-                    // v0.33: mana abilities re-prompt inside this loop, so checkpoint the tapped state; Undo then untaps only this source.
-                    undo.checkpoint(me.getGame(), me);
-                }
-                else MatchWorker.emit(Map.of("type", "NOTICE", "message", "Mana ability could not be activated."));
-                continue; // mana abilities do not use the stack; keep priority
+                // Let PhaseHandler execute this action, reset the priority-pass sequence and
+                // check SBAs/triggers before offering priority again (including Food Chain).
+                return List.of(sa);
             }
             // Do not call getAi().canPlaySa here: it is a strategic decision, not a legality check.
             List<SpellAbility> out = new ArrayList<>();
@@ -675,6 +671,15 @@ public final class HumanBridgeController extends PlayerControllerAi {
     public boolean playChosenSpellAbility(SpellAbility sa) {
         sa.setActivatingPlayer(getPlayer());
         if (sa.isLandAbility()) { if (!sa.canPlay()) return false; sa.resolve(); return true; }
+        if (sa.isManaAbility()) {
+            if (!activateHumanMana(sa)) {
+                MatchWorker.emit(Map.of("type", "NOTICE", "message", "Mana ability could not be activated."));
+                return false;
+            }
+            MatchWorker.recordManaAction(sa);
+            getPlayer().getGame().getUndoManager().checkpoint(getPlayer().getGame(), getPlayer());
+            return true;
+        }
         return castWithHumanChoices(sa);
     }
 
@@ -1021,8 +1026,9 @@ public final class HumanBridgeController extends PlayerControllerAi {
         Map<String, Object> body = new LinkedHashMap<>();
         String text = message == null || message.isBlank() ? "Do you want to do this?" : message;
         // v0.35: commander moving to graveyard/exile names the card and both destinations.
-        if (mode == PlayerActionConfirmMode.ChangeZoneToAltDestination && sa != null && sa.getHostCard() != null && sa.getHostCard().isCommander()) {
-            Card cmd = sa.getHostCard();
+        Card movedCard = cardToShow != null ? cardToShow : sa == null ? null : sa.getHostCard();
+        if (mode == PlayerActionConfirmMode.ChangeZoneToAltDestination && movedCard != null && movedCard.isRealCommander() && movedCard.getOwner() == getPlayer()) {
+            Card cmd = movedCard;
             text = "Your commander " + cmd.getName() + " is going to the " + zoneLabel(cmd.getZone() == null ? null : cmd.getZone().getZoneType()) + ". Move it to the command zone instead?";
             body.put("commanderMove", true); body.put("card", card(cmd));
             body.put("yesLabel", "Command zone"); body.put("noLabel", "Leave it there");

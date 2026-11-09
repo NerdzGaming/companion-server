@@ -78,6 +78,12 @@ replace(game_root / 'GameAction.java',
     'public void reveal(CardCollectionView cards, ZoneType zt, Player cardOwner, boolean dontRevealToOwner, String messagePrefix, boolean msgAddSuffix) {',
     'public void reveal(CardCollectionView cards, ZoneType zt, Player cardOwner, boolean dontRevealToOwner, String messagePrefix, boolean msgAddSuffix) {\n        NerdzReveal.publish(cards, zt, cardOwner);')
 print('Applied effect-scoped public reveal hook')
+# Preserve the actual commander even when its current face has no spell ability.
+# Timing and ownership remain in Forge's normal CR 903.9a state-based action.
+replace(game_root / 'GameAction.java',
+    'PlayerActionConfirmMode.ChangeZoneToAltDestination, c.getDisplayName() + ": If a commander is in a graveyard or in exile and that card was put into that zone since the last time state-based actions were checked, its owner may put it into the command zone.", null)',
+    'PlayerActionConfirmMode.ChangeZoneToAltDestination, c.getDisplayName() + ": If a commander is in a graveyard or in exile and that card was put into that zone since the last time state-based actions were checked, its owner may put it into the command zone.", c, null)')
+print('Applied actual-card commander decision context')
 replace(game_root / 'ability/effects/PeekAndRevealEffect.java',
     '            params.put("Revealed", peekCards);',
     '            params.put("Revealed", peekCards);\n            forge.game.NerdzReveal.choiceBatch(peekCards, srcZone, zoneToPeek, sa);')

@@ -15,7 +15,7 @@ RUN mvn -B org.apache.maven.plugins:maven-install-plugin:3.1.3:install-file \
 WORKDIR /server
 COPY pom.xml ./
 COPY src ./src
-RUN mvn -B package
+RUN python3 src/test/commander_priority_test.py && mvn -B package
 
 FROM eclipse-temurin:17-jre-jammy
 RUN useradd --create-home --uid 10001 forge
