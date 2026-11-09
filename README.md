@@ -1,6 +1,7 @@
 # Companion Server v0.54
 
 ## v0.54: opponent removal, combat sequencing and constructed defaults
+- Follow-up: initialize missing mana-ability activators before conditional production checks (including Sacred Foundry); existing activators remain unchanged. The matching website detaches retired socket callbacks and cancels stale retries to prevent duplicate reconnect loops.
 - Burn targeting a player, recursion/tutors and multi-target effects stay with the engine's normal evaluation; extra removal patience applies only to single-target battlefield removal.
 - Sorcery-speed removal can be used in Main 2 below the usual threat threshold. Public creature power, toughness and mana value increase threat scores; combo/engine/stax priorities remain intact.
 - Available pre-land selection is considered independently of the land action. Haste enablers and attack-trigger plays may be sequenced before combat.

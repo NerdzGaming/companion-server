@@ -111,6 +111,7 @@ public final class OpponentStrategy {
                 for (Card c : p.getCardsIn(ZoneType.Battlefield)) {
                     if (c.isFaceDown() || c.isTapped()) continue;
                     for (var ma : c.getManaAbilities()) {
+                        if (ma.getActivatingPlayer() == null && c.getController() != null) ma.setActivatingPlayer(c.getController());
                         var part = ma.getManaPart();
                         if (part != null && (part.canProduce("U", ma) || part.canProduce("W", ma) || part.canProduce("B", ma) || part.canProduce("R", ma))) { open++; break; }
                     }
@@ -235,6 +236,7 @@ public final class OpponentStrategy {
             if (c.isCreature()) { creatures++; power += Math.max(0, c.getNetPower()); }
             if (ThreatAssessment.drawEngine(c.getName()) || ThreatAssessment.stax(c.getName())) engines++;
             if (!c.isTapped()) for (var ma : c.getManaAbilities()) {
+                if (ma.getActivatingPlayer() == null && c.getController() != null) ma.setActivatingPlayer(c.getController());
                 var part = ma.getManaPart();
                 try {
                     if (part != null && (part.canProduce("U", ma) || part.canProduce("W", ma))) { interactive++; break; }

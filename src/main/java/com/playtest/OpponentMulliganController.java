@@ -319,6 +319,7 @@ public final class OpponentMulliganController extends PlayerControllerAi {
         int mask = 0;
         String[] colors = {"W", "U", "B", "R", "G"};
         for (var ma : c.getManaAbilities()) {
+            if (ma.getActivatingPlayer() == null && c.getController() != null) ma.setActivatingPlayer(c.getController());
             var part = ma.getManaPart();
             if (part == null) continue;
             for (int i = 0; i < colors.length; i++) {
