@@ -1,4 +1,12 @@
-# Companion Server v0.53
+# Companion Server v0.54
+
+## v0.54: opponent removal, combat sequencing and constructed defaults
+- Burn targeting a player, recursion/tutors and multi-target effects stay with the engine's normal evaluation; extra removal patience applies only to single-target battlefield removal.
+- Sorcery-speed removal can be used in Main 2 below the usual threat threshold. Public creature power, toughness and mana value increase threat scores; combo/engine/stax priorities remain intact.
+- Available pre-land selection is considered independently of the land action. Haste enablers and attack-trigger plays may be sequenced before combat.
+- Crackback estimates assign legal blockers once, fully stopping non-trample attackers and preserving trample overflow rather than subtracting blocker toughness from every attack.
+- Missing format defaults to Constructed for decks without a Commander section; explicit format and site-provided life/mulligan values remain authoritative.
+- Human decisions, solo Playtest, transport protection and match isolation are unchanged. Deploy to Render and start a new match to use this version.
 
 ## v0.53: human discard choices, including opponent hands
 - Thoughtseize, Duress, Inquisition, Grief and related effects ask the actual human chooser instead of treating the affected opponent as the decision maker. The full effect-permitted hand stays visible, with ineligible cards disabled, including when only one discard is legal.

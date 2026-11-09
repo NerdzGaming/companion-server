@@ -6,4 +6,7 @@
 - Docker applies patch-strategy.py to the exact pinned upstream before building; mismatches must fail rather than silently omit scoring hooks.
 - OpponentStrategy reads human cards only from face-up public battlefield zones; its own hand and command zone are permitted, but libraries and the human deck are never strategic inputs.
 - Strategy bonuses only adjust engine evaluation; preserve legality, timing, casting, targeting and payment checks.
-- OpeningHandPolicy and OpponentMulliganController use submitted-deck aggregate statistics minus the known AI hand, never game-library contents; keep mulligan debug output private to prevent exposing bottomed cards.- ThreatAssessment stays pure and reads only public battlefield, hand counts and life; it adjusts evaluator scores for opposing permanents, never legality.
+- OpeningHandPolicy and OpponentMulliganController use submitted-deck aggregate statistics minus the known AI hand, never game-library contents; keep mulligan debug output private to prevent exposing bottomed cards.
+- ThreatAssessment stays pure and reads only public battlefield, hand counts and life; it adjusts evaluator scores for opposing permanents, never legality.
+- Keep RemovalPolicy and MatchFormat pure so removal patience cannot intercept recursion/player burn and missing-format inference remains testable without Forge.
+- Crackback estimates assign each public legal blocker at most once and preserve trample overflow; estimates never alter engine combat legality.

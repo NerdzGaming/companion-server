@@ -48,6 +48,14 @@ public final class ActionSequencerTest {
         eq(1, ActionSequencer.manaSourceTapOrder(false, 1, true), "held-interaction color is preserved");
         eq(2, ActionSequencer.manaSourceTapOrder(false, 2, true), "multicolor preserved most");
         eq(2, ActionSequencer.manaSourceTapOrder(false, 3, false), "any-color preserved most");
+        eq(true, ActionSequencer.precombatText("That creature gains haste until end of turn."), "Break Out matters before combat");
+        eq(true, ActionSequencer.precombatText("Whenever this creature attacks, draw a card."), "attack trigger matters before combat");
+        eq(false, ActionSequencer.precombatText("Whenever this creature enters, draw a card."), "ordinary ETB waits");
+        eq(0, ActionSequencer.blockedDamage(10, 1, false, false), "1/1 chump stops non-trample 10/10");
+        eq(9, ActionSequencer.blockedDamage(10, 1, true, false), "trample over 1/1 deals 9");
+        eq(4, ActionSequencer.blockedDamage(10, 6, true, false), "trample respects blocker toughness");
+        eq(9, ActionSequencer.blockedDamage(10, 6, true, true), "deathtouch trample assigns one lethal");
+        eq(0, ActionSequencer.blockedDamage(2, 6, true, false), "tough blocker absorbs all trample");
         System.out.println(n + " action sequencer checks passed");
     }
 }

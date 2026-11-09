@@ -44,6 +44,14 @@ public final class ThreatAssessmentTest {
         eq(15, ThreatAssessment.attackPriority(15, "midrange", 20, "combo"), "no chip below 30 life");
         eq(false, ThreatAssessment.archenemyDefense(60, 50), "no defense mode below +25");
         eq(false, ThreatAssessment.sandbag(60, 50, 30, 20, false, false), "leader never sandbags");
+        eq(true, ThreatAssessment.removalAllowed(35, false, false, false, true, true), "sorcery removal has Main 2 window");
+        eq(false, ThreatAssessment.removalAllowed(35, false, false, false, true, false), "sorcery patience outside Main 2");
+        eq(false, ThreatAssessment.removalAllowed(35, false, false, false, false, true), "instant removal retains patience in Main 2");
+        eq(false, ThreatAssessment.removalAllowed(-20, true, true, true, true, true), "policing stax stays protected");
+        eq(68, ThreatAssessment.creatureThreat(6, 6, 2), "grown Murktide is an urgent threat");
+        eq(86, ThreatAssessment.creatureThreat(6, 6, 8), "Archon is urgent without commander label");
+        eq(30, ThreatAssessment.creatureThreat(1, 1, 1), "small vanilla creature retains low score");
+        eq(20, ThreatAssessment.creatureThreat(-1, -1, 0), "negative stats bounded");
         System.out.println(n + " threat assessment checks passed");
     }
 }

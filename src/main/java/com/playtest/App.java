@@ -46,7 +46,7 @@ public final class App {
             if (!TransportAccess.authorized(ctx.header("Authorization"), apiKey)) throw new UnauthorizedResponse();
             JsonNode body = JSON.readTree(ctx.body());
             String p = body.path("playerDeckDck").asText(""), a = body.path("aiDeckDck").asText("");
-            String format = body.path("format").asText("Commander");
+            String format = MatchFormat.resolve(body.path("format").asText(null), p, a);
             if (p.isBlank() || a.isBlank() || p.length() > MAX_DECK || a.length() > MAX_DECK
                     || !List.of("Commander", "Constructed").contains(format)) {
                 ctx.status(400).json(Map.of("error", "Send playerDeckDck and aiDeckDck (.dck text)")); return;

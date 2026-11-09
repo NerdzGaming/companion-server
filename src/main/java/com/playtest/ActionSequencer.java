@@ -20,6 +20,19 @@ public final class ActionSequencer {
         return untappedBlueSources >= 2 && handSize >= 1;
     }
 
+    /** Own card rules text only: haste enablers and attack triggers can matter before combat. */
+    public static boolean precombatText(String oracle) {
+        String text = oracle == null ? "" : oracle.toLowerCase(java.util.Locale.ROOT);
+        return text.contains("haste") || text.contains("whenever") &&
+            (text.contains(" attacks") || text.contains(" attack,"));
+    }
+
+    /** A legal chump absorbs all non-trample damage; trample/deathtouch retains overflow. */
+    public static int blockedDamage(int damage, int toughness, boolean trample, boolean deathtouch) {
+        if (!trample) return 0;
+        return Math.max(0, damage - (deathtouch ? 1 : Math.max(0, toughness)));
+    }
+
     /** Priority delta in Forge comparator units (higher = earlier). */
     public static int priority(Play p) {
         int delta = 0;
