@@ -397,7 +397,7 @@ public final class HumanBridgeController extends PlayerControllerAi {
     @Override
     public void declareBlockers(Player defender, Combat combat) {
         List<Card> blockers = new ArrayList<>();
-        for (Card c : defender.getCreaturesInPlay()) if (CombatUtil.canBlock(c, combat)) blockers.add(c);
+        for (Card c : defender.getCreaturesInPlay()) if (CombatUtil.canBlock(c)) blockers.add(c);
         List<Card> attackers = new ArrayList<>(combat.getAttackers());
         if (blockers.isEmpty() || attackers.isEmpty()) return;
         List<Map<String, Object>> at = new ArrayList<>(), bl = new ArrayList<>();
@@ -410,6 +410,7 @@ public final class HumanBridgeController extends PlayerControllerAi {
             for (Card atk : attackers) if (legalBlock(atk, b, combat)) ok.add(atk.getId());
             legal.put(String.valueOf(b.getId()), ok);
         }
+        while (true) {
         JsonNode a = ask("BLOCK", Map.of("attackers", at, "blockers", bl, "legal", legal));
         // v0.39: never let the AI pick blocks for the human; an unanswered prompt means no blocks.
         if (a == null) { MatchWorker.emit(Map.of("type", "NOTICE", "message", "No block chosen — your creatures did not block.")); return; }
@@ -423,12 +424,21 @@ public final class HumanBridgeController extends PlayerControllerAi {
             else refused.add(blk.getName() + " can't block " + atk.getName());
         }
         if (!refused.isEmpty()) MatchWorker.emit(Map.of("type", "NOTICE", "message", String.join("; ", refused) + "."));
+        String error = CombatUtil.validateBlocks(combat, defender);
+        if (error == null && refused.isEmpty()) return;
+        // Validate the entire submitted group, then reprompt rather than silently accepting illegal blocks.
+        for (Card blocker : blockers) combat.undoBlockingAssignment(blocker);
+        MatchWorker.emit(Map.of("type", "NOTICE", "message", error == null ? "Please choose legal blockers." : error));
+        }
     }
 
-    /** Evasion (flying, shadow, landwalk, "can't be blocked except by") plus combat limits; both checks must pass. */
+    /** Offer untapped/evasion-legal pairs independently of partial group assignments.
+     * Summoning sickness restricts attacking/tap abilities, not blocking (CR 302.6).
+     * Forge validates the complete assignment for menace, lure and blocker limits afterward.
+     */
     private static boolean legalBlock(Card attacker, Card blocker, Combat combat) {
         try {
-            return CombatUtil.canBlock(blocker, combat) && CombatUtil.canBlock(attacker, blocker) && CombatUtil.canBlock(attacker, blocker, combat);
+            return CombatUtil.canBlock(blocker) && CombatUtil.canBlock(attacker, blocker);
         } catch (RuntimeException e) { return false; }
     }
 

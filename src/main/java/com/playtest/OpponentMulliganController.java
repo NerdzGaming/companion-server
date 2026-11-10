@@ -107,7 +107,12 @@ public final class OpponentMulliganController extends PlayerControllerAi {
         if (decision.keep()) {
             // Forge supplies the authoritative, format-adjusted return count at this callback.
             for (Card card : chooseBottom(hand, Math.max(0, redraws - MatchWorker.freeMulligans))) getPlayer().getGame().getAction().moveToLibrary(card, -1, null);
-        } else { redraws++; }
+        } else {
+            redraws++;
+            String text = MulliganNotice.text(getPlayer().getName(), hand.size(), redraws, MatchWorker.freeMulligans);
+            if (MatchWorker.actionLog != null) MatchWorker.actionLog.mulligan(text);
+            MatchWorker.emit(Map.of("type", "NOTICE", "category", "mulligan", "message", text));
+        }
         return decision.keep();
     }
     @Override public CardCollectionView tuckCardsViaMulligan(CardCollectionView hand, int cardsToReturn) {

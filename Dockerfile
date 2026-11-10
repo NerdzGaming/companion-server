@@ -13,9 +13,9 @@ RUN mvn -B org.apache.maven.plugins:maven-install-plugin:3.1.3:install-file \
     -DgroupId=com.nerdz.upstream -DartifactId=forge-headless -Dversion=${FORGE_REF} -Dpackaging=jar -DgeneratePom=true
 # Stage 2: build this server
 WORKDIR /server
-COPY pom.xml ./
+COPY pom.xml patch-strategy.py ./
 COPY src ./src
-RUN python3 src/test/commander_priority_test.py && mvn -B package
+RUN python3 src/test/commander_priority_test.py && python3 src/test/blocking_options_test.py && mvn -B package
 
 FROM eclipse-temurin:17-jre-jammy
 RUN useradd --create-home --uid 10001 forge

@@ -12,3 +12,5 @@
 - Crackback estimates assign each public legal blocker at most once and preserve trample overflow; estimates never alter engine combat legality.
 - Standalone human mana selections return the chosen ability to PhaseHandler and resolve in playChosenSpellAbility so priority resets, SBAs and triggers precede the next action; cost-payment activations never run premature SBAs.
 - Commander SBA confirmations carry the actual moved card to its owner so transformed or abilityless faces cannot lose decision context.
+- Human blocking options use readiness and pairwise evasion checks; complete assignments remain engine-validated so partial menace/lure groups cannot hide candidates.
+- Publish only resulting kept-card counts and free-mulligan usage for opponent redraws, never private hand analysis or bottomed names.

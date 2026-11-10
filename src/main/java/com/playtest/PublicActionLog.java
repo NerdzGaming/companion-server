@@ -50,6 +50,7 @@ public final class PublicActionLog {
         add("reveal", owner + " reveals " + String.join(", ", cards) + (zone == null ? "" : " from their " + zone) + ".");
     }
     void manaAction(String source) { add("mana", "Activates " + source + " for mana."); }
+    void mulligan(String text) { add("mulligan", text); }
     synchronized List<Map<String, Object>> snapshot() { flushPending(); return new ArrayList<>(entries); }
     @Subscribe public void turn(GameEventTurnBegan e) { add("state", "Turn " + e.turnNumber() + " begins — " + e.turnOwner().getName() + "."); }
     @Subscribe public void phase(GameEventTurnPhase e) { add("state", e.playerTurn().getName() + " enters " + e.phase().name() + "."); }

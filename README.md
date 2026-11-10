@@ -1,4 +1,10 @@
-# Companion Server v0.54.2
+# Companion Server v0.54.4
+
+## v0.54.4: blocker selection and public mulligan notices
+- Human blocker choices use creature readiness and pairwise evasion legality, not partial combat-group validation; summoning sickness does not prevent blocking. Forge retains final validation of complete blocks, including menace, lure and maximum-blocker restrictions.
+- Opponent redraws publish the resulting London kept-card count and free-mulligan usage to the bounded public action log and a non-blocking table notice. Hand identities, bottomed cards and strategy scores remain private.
+- The matching website adds a default-open, minimizable desktop mini action log with full-history access; mobile keeps the existing history dialog. Regular solo Playtest is unchanged.
+- Includes the v0.54.3 Docker packaging correction. Deploy to Render and start a new match; full engine compilation and live-game verification remain deployment checks.
 
 ## v0.54.2: commander choices after mana abilities
 - Standalone mana activations return to the engine's priority loop before the next action. Food Chain's exile cost, sacrifice-for-mana abilities and other commander zone changes now reach the normal state-based commander decision before another activation or cast.

@@ -12,6 +12,7 @@ public final class PolicyTestSuite {
         MatchFormatTest.main(args);
         MatchNamesTest.main(args);
         OpeningHandPolicyTest.main(args);
+        MulliganNoticeTest.main(args);
         RemovalPolicyTest.main(args);
         RevealChoicesTest.main(args);
         StrategyWeightsTest.main(args);
