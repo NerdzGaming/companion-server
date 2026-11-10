@@ -1,4 +1,10 @@
-# Companion Server v0.54.5
+# Companion Server v0.54.6
+
+## v0.54.6: stack token identity and accurate blocking logs
+- Stack entries retain public host token/type/power/toughness metadata for face-aware artwork. Face-down hosts do not expose these details.
+- Unblocked attacker drawing placeholders no longer produce false self-block log entries. Real blockers with different card IDs, including copies with the same name, remain logged.
+- The matching website adds safe empty-window auto-pass, own-action priority passing, Full control and per-seat phase bookmarks. Legal upkeep/draw responses and all mandatory decisions remain available. Messaging Logs is resizable.
+- Deploy to Render and publish the website; full pinned-engine compilation and live-match verification remain deployment checks.
 
 ## v0.54.5: complete public zone movement logs
 - Every zone transition is recorded, including hand/library transfers, casts to the stack, spell resolution to the graveyard and land plays. Draws retain the existing bundled draw log. Moves between hidden zones use anonymous card descriptions; face-down identities remain hidden.

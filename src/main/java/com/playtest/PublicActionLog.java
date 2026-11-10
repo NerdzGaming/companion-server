@@ -75,7 +75,11 @@ public final class PublicActionLog {
         for (var item : e.attackersMap().entries()) add("combat", e.player().getName() + " attacks with " + name(item.getValue()) + ".");
     }
     @Subscribe public void block(GameEventBlockersDeclared e) {
-        for (var group : e.blockers().values()) for (var item : group.entries()) add("combat", name(item.getValue()) + " blocks " + name(item.getKey()) + ".");
+        for (var group : e.blockers().values()) for (var item : group.entries()) {
+            // Forge inserts attacker→attacker for unblocked combat UI drawing.
+            if (item.getKey().getId() == item.getValue().getId()) continue;
+            add("combat", name(item.getValue()) + " blocks " + name(item.getKey()) + ".");
+        }
     }
     @Subscribe public void shuffle(GameEventShuffle e) { add("state", e.player().getName() + " shuffles their library."); }
     @Subscribe public void damage(GameEventCardDamaged e) { add("combat", name(e.card()) + " takes " + e.amount() + " damage."); }

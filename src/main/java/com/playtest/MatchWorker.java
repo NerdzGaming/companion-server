@@ -170,6 +170,11 @@ public final class MatchWorker {
             e.put("id", si.getId());
             e.put("cardId", host == null ? -1 : host.getId());
             e.put("name", host == null ? "Ability" : visibleName(host));
+            if (host != null && !host.isFaceDown()) {
+                e.put("token", host.isToken());
+                e.put("typeLine", host.getType().toString());
+                if (host.isCreature()) { e.put("power", host.getNetPower()); e.put("toughness", host.getNetToughness()); }
+            }
             e.put("controller", si.getActivatingPlayer() == null ? "" : si.getActivatingPlayer().getName());
             e.put("spell", sa.isSpell());
             e.put("copy", sa.isCopied() || (host != null && host.isCopiedSpell()));
