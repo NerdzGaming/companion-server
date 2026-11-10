@@ -34,6 +34,7 @@ public final class MatchWorker {
     static final ObjectMapper JSON = new ObjectMapper();
     static PrintStream out;
     static PublicActionLog actionLog;
+    static final LoopMacro loop = new LoopMacro();
     static final List<Map<String, Object>> publicReveals = new ArrayList<>();
     static final String opponentDisplayName = MatchNames.aiName(java.util.concurrent.ThreadLocalRandom.current().nextInt(3));
 
@@ -188,6 +189,7 @@ public final class MatchWorker {
         s.put("stack", stack);
         try { s.put("stormCount", game.getStack().getSpellsCastThisTurn().size()); } catch (RuntimeException ignored) { }
         s.put("actionLog", actionLog == null ? List.of() : actionLog.snapshot());
+        s.put("loop", loop.status());
         s.put("publicReveals", new ArrayList<>(publicReveals));
         return s;
     }

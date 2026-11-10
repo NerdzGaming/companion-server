@@ -80,7 +80,11 @@ public final class HumanBridgeController extends PlayerControllerAi {
             try (BufferedReader r = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8))) {
                 String line;
                 while ((line = r.readLine()) != null) {
-                    try { INBOX.put(MatchWorker.JSON.readTree(line)); } catch (Exception ignored) { }
+                    try {
+                        JsonNode message = MatchWorker.JSON.readTree(line);
+                        if ("LOOP".equals(message.path("type").asText()) && "STOP".equals(message.path("command").asText())) MatchWorker.loop.requestStop();
+                        INBOX.put(message);
+                    } catch (Exception ignored) { }
                 }
             } catch (Exception ignored) { }
         });
@@ -117,6 +121,22 @@ public final class HumanBridgeController extends PlayerControllerAi {
         Map<String, Object> p = new LinkedHashMap<>();
         p.put("type", "PROMPT"); p.put("kind", kind); p.put("promptId", id);
         p.putAll(body);
+        JsonNode loopPrompt = MatchWorker.JSON.valueToTree(p);
+        var phase = getPlayer().getGame().getPhaseHandler();
+        String loopScope = phase.getTurn() + ":" + phase.getPhase();
+        // Every replay still returns through the normal engine action/priority lifecycle.
+        if (MatchWorker.loop.active()) {
+            try {
+                JsonNode control;
+                while ((control = INBOX.poll(60, TimeUnit.MILLISECONDS)) != null) {
+                    if ("LOOP".equals(control.path("type").asText())) MatchWorker.loop.command(control.path("command").asText(), control.path("count").asInt(), loopPrompt, loopScope);
+                    else { INBOX.offer(control); break; }
+                }
+            } catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
+        }
+        JsonNode replay = MatchWorker.loop.replay(loopPrompt, loopScope);
+        if (replay != null) return replay;
+        MatchWorker.emit(MatchWorker.snapshot(getPlayer().getGame()));
         MatchWorker.emit(p);
         long deadline = System.currentTimeMillis() + TimeUnit.MINUTES.toMillis(TIMEOUT_MIN);
         try {
@@ -128,9 +148,20 @@ public final class HumanBridgeController extends PlayerControllerAi {
                     deadline = System.currentTimeMillis() + TimeUnit.MINUTES.toMillis(TIMEOUT_MIN);
                     continue;
                 }
-                if (id.equals(m.path("promptId").asText())) return m;
+                if ("LOOP".equals(m.path("type").asText())) {
+                    MatchWorker.loop.command(m.path("command").asText(), m.path("count").asInt(), loopPrompt, loopScope);
+                    MatchWorker.emit(MatchWorker.snapshot(getPlayer().getGame()));
+                    JsonNode next = MatchWorker.loop.replay(loopPrompt, loopScope);
+                    if (next != null) return next;
+                    continue;
+                }
+                if (id.equals(m.path("promptId").asText())) {
+                    MatchWorker.loop.record(loopPrompt, m, loopScope);
+                    return m;
+                }
             }
         } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+        MatchWorker.loop.stop("Decision timed out.");
         MatchWorker.emit(Map.of("type", "NOTICE", "message", "SURVEIL".equals(kind) ? "No answer in time — the cards stay on top in their original order." : "No answer in time — Forge AI decided for you."));
         return null;
     }

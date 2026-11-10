@@ -3,6 +3,7 @@ package com.playtest;
 /** Runs the dependency-free regression checks during Maven's test phase as well as standalone validation. */
 public final class PolicyTestSuite {
     public static void main(String[] args) {
+        LoopMacroTest.main(args);
         ActionSequencerTest.main(args);
         DiscardChoicesTest.main(args);
         HumanChoicesTest.main(args);
