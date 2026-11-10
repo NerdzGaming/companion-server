@@ -107,7 +107,12 @@ public final class OpponentMulliganController extends PlayerControllerAi {
         if (decision.keep()) {
             // Forge supplies the authoritative, format-adjusted return count at this callback.
             for (Card card : chooseBottom(hand, Math.max(0, redraws - MatchWorker.freeMulligans))) getPlayer().getGame().getAction().moveToLibrary(card, -1, null);
-        } else { redraws++; }
+        } else {
+            redraws++;
+            String text = MulliganNotice.text(getPlayer().getName(), hand.size(), redraws, MatchWorker.freeMulligans);
+            if (MatchWorker.actionLog != null) MatchWorker.actionLog.mulligan(text);
+            MatchWorker.emit(Map.of("type", "NOTICE", "category", "mulligan", "message", text));
+        }
         return decision.keep();
     }
     @Override public CardCollectionView tuckCardsViaMulligan(CardCollectionView hand, int cardsToReturn) {
@@ -170,19 +175,7 @@ public final class OpponentMulliganController extends PlayerControllerAi {
         int defenderLife = Integer.MAX_VALUE;
         for (var d : combat.getDefenders()) if (d instanceof Player p && !p.equals(ai)) defenderLife = Math.min(defenderLife, p.getLife());
         if (defenderLife == Integer.MAX_VALUE) return; // only planeswalker/battle defenders
-        int incoming = 0;
-        for (Player p : ai.getGame().getPlayers()) {
-            if (p.equals(ai) || p.hasLost()) continue;
-            for (Card c : p.getCardsIn(ZoneType.Battlefield))
-                if (!c.isFaceDown() && c.isCreature()) incoming += Math.max(0, c.getNetCombatDamage());
-        }
-        int absorbed = 0;
-        for (Card c : ai.getCardsIn(ZoneType.Battlefield)) {
-            if (!c.isCreature()) continue;
-            boolean staysHome = !combat.isAttacking(c) || c.hasKeyword(Keyword.VIGILANCE);
-            if (staysHome && !c.isTapped()) absorbed += Math.max(1, c.getNetToughness());
-        }
-        incoming = Math.max(0, incoming - absorbed);
+        int incoming = crackbackDamage(combat);
         if (!ActionSequencer.vetoCrackback(ai.getLife(), outgoing, defenderLife, incoming)) return;
         // Pull non-vigilance attackers home, lowest power first, until the crackback is survivable.
         List<Card> attackers = new ArrayList<>();
@@ -191,9 +184,42 @@ public final class OpponentMulliganController extends PlayerControllerAi {
         for (Card c : attackers) {
             combat.removeFromCombat(c);
             outgoing -= Math.max(0, c.getNetCombatDamage());
-            incoming = Math.max(0, incoming - Math.max(1, c.getNetToughness())); // it stays home as a blocker
+            incoming = crackbackDamage(combat); // recompute legal, one-use blocks after each pullback
             if (!ActionSequencer.vetoCrackback(ai.getLife(), outgoing, defenderLife, incoming)) break;
         }
+    }
+
+    /** Conservative public-board estimate: one blocker per attacker, never reuse blockers or invent evasion bypasses. */
+    private int crackbackDamage(Combat combat) {
+        Player ai = getPlayer();
+        List<Card> blockers = new ArrayList<>();
+        for (Card c : ai.getCardsIn(ZoneType.Battlefield)) {
+            if (!c.isCreature() || c.isTapped()) continue;
+            if (!combat.isAttacking(c) || c.hasKeyword(Keyword.VIGILANCE)) blockers.add(c);
+        }
+        List<Card> threats = new ArrayList<>();
+        for (Player p : ai.getGame().getPlayers()) {
+            if (p.equals(ai) || p.hasLost()) continue;
+            for (Card c : p.getCardsIn(ZoneType.Battlefield)) {
+                if (!c.isFaceDown() && c.isCreature() && CombatUtil.canAttackNextTurn(c, ai)) threats.add(c);
+            }
+        }
+        threats.sort((a, b) -> Integer.compare(Math.max(0, b.getNetCombatDamage()), Math.max(0, a.getNetCombatDamage())));
+        int incoming = 0;
+        for (Card attacker : threats) {
+            int damage = Math.max(0, attacker.getNetCombatDamage());
+            Card best = null; int saved = 0;
+            // Menace needs a legal group; conservatively count it unblocked rather than assign one illegal blocker.
+            if (!attacker.hasKeyword(Keyword.MENACE)) for (Card blocker : blockers) {
+                if (!CombatUtil.canBlock(attacker, blocker)) continue;
+                int prevented = damage - ActionSequencer.blockedDamage(damage, blocker.getNetToughness(),
+                    attacker.hasKeyword(Keyword.TRAMPLE), attacker.hasKeyword(Keyword.DEATHTOUCH));
+                if (prevented > saved) { best = blocker; saved = prevented; }
+            }
+            if (best != null) blockers.remove(best);
+            incoming += damage - saved;
+        }
+        return incoming;
     }
 
     /** v0.45: protected creatures (dorks, engines, commanders, combo pieces) do not chump into surviving attackers. */
@@ -298,6 +324,7 @@ public final class OpponentMulliganController extends PlayerControllerAi {
         int mask = 0;
         String[] colors = {"W", "U", "B", "R", "G"};
         for (var ma : c.getManaAbilities()) {
+            if (ma.getActivatingPlayer() == null && c.getController() != null) ma.setActivatingPlayer(c.getController());
             var part = ma.getManaPart();
             if (part == null) continue;
             for (int i = 0; i < colors.length; i++) {

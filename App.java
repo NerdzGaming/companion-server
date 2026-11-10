@@ -46,7 +46,7 @@ public final class App {
             if (!TransportAccess.authorized(ctx.header("Authorization"), apiKey)) throw new UnauthorizedResponse();
             JsonNode body = JSON.readTree(ctx.body());
             String p = body.path("playerDeckDck").asText(""), a = body.path("aiDeckDck").asText("");
-            String format = body.path("format").asText("Commander");
+            String format = MatchFormat.resolve(body.path("format").asText(null), p, a);
             if (p.isBlank() || a.isBlank() || p.length() > MAX_DECK || a.length() > MAX_DECK
                     || !List.of("Commander", "Constructed").contains(format)) {
                 ctx.status(400).json(Map.of("error", "Send playerDeckDck and aiDeckDck (.dck text)")); return;
@@ -93,7 +93,7 @@ public final class App {
                 if (type.equals("PING")) { ctx.send("{\"type\":\"PONG\"}"); return; }
                 MatchSession m = MATCHES.get(ctx.pathParam("id"));
                 if (type.equals("LEAVE")) { if (m != null) end(m); ctx.closeSession(); return; }
-                if (!(type.equals("ACT") || type.equals("LOADING_HOLD")) || m == null || m.worker == null || !m.worker.isAlive()) {
+                if (!(type.equals("ACT") || type.equals("LOADING_HOLD") || type.equals("LOOP")) || m == null || m.worker == null || !m.worker.isAlive()) {
                     ctx.send("{\"type\":\"ERROR\",\"message\":\"Unknown action or match not running\"}"); return;
                 }
                 // Forward the decision to the Forge worker (one JSON line on its stdin).
@@ -101,6 +101,9 @@ public final class App {
                     var in = m.worker.getOutputStream();
                     in.write((JSON.writeValueAsString(msg) + "\n").getBytes(StandardCharsets.UTF_8));
                     in.flush();
+                    // The pending decision was answered; don't resend it to sockets that connect later.
+                    String answeredId = msg.path("promptId").asText("");
+                    if (type.equals("ACT") && !answeredId.isEmpty() && m.lastPrompt != null && m.lastPrompt.contains("\"" + answeredId + "\"")) m.lastPrompt = null;
                 }
             });
             ws.onClose(ctx -> {

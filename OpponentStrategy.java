@@ -99,8 +99,7 @@ public final class OpponentStrategy {
             var api = sa.getApi();
             boolean selection = api == ApiType.Draw || api == ApiType.Scry
                 || api == ApiType.Surveil || api == ApiType.Dig;
-            boolean combat = api == ApiType.Pump || api == ApiType.PumpAll
-                || api == ApiType.Destroy || api == ApiType.DealDamage;
+            boolean combat = combatRelevant(sa, card, ai);
             var phase = ph.getPhase();
             boolean ownTurn = ph.isPlayerTurn(ai);
             boolean endBeforeMine = !ownTurn && phase == PhaseType.END_OF_TURN && ai.equals(ph.getNextTurn());
@@ -112,6 +111,7 @@ public final class OpponentStrategy {
                 for (Card c : p.getCardsIn(ZoneType.Battlefield)) {
                     if (c.isFaceDown() || c.isTapped()) continue;
                     for (var ma : c.getManaAbilities()) {
+                        if (ma.getActivatingPlayer() == null && c.getController() != null) ma.setActivatingPlayer(c.getController());
                         var part = ma.getManaPart();
                         if (part != null && (part.canProduce("U", ma) || part.canProduce("W", ma) || part.canProduce("B", ma) || part.canProduce("R", ma))) { open++; break; }
                     }
@@ -153,17 +153,19 @@ public final class OpponentStrategy {
             boolean preLandCantrip = ownTurn && mainOne && noLandYet && selection;
 
             // Land drops are never vetoed, except to let a pre-land card-selection play resolve first.
-            if (sa.isLandAbility()) return preLandCantrip && hasPreLandSelection(ai);
+            if (sa.isLandAbility()) return ownTurn && mainOne && stackEmpty && noLandYet && hasPreLandSelection(ai);
+
+            boolean instant = card.isInstant() || card.hasKeyword(Keyword.FLASH) || !sa.isSpell();
 
             // Removal patience: hold single-target removal for real threats (score 65+).
             if (isSingleTargetRemoval(sa, card)) {
                 int bestScore = bestRemovalTargetScore(sa, ai);
                 if (bestScore < 0) return true; // own permanent or stax that polices the leader
                 boolean discarding = ownTurn && mainTwo && ai.getCardsIn(ZoneType.Hand).size() > ai.getMaxHandSize();
-                if (!ThreatAssessment.removalAllowed(bestScore, endBeforeMine, discarding, tempoWin(game, ai))) return true;
+                if (!ThreatAssessment.removalAllowed(bestScore, endBeforeMine, discarding, tempoWin(game, ai),
+                    !instant, ownTurn && mainTwo)) return true;
             }
 
-            boolean instant = card.isInstant() || card.hasKeyword(Keyword.FLASH) || !sa.isSpell();
             boolean combat = combatRelevant(sa, card, ai);
             boolean flashNonCombat = card.hasKeyword(Keyword.FLASH) && !combat;
             // Instant-speed selection and non-combat flash threats wait for the end step before our turn.
@@ -234,6 +236,7 @@ public final class OpponentStrategy {
             if (c.isCreature()) { creatures++; power += Math.max(0, c.getNetPower()); }
             if (ThreatAssessment.drawEngine(c.getName()) || ThreatAssessment.stax(c.getName())) engines++;
             if (!c.isTapped()) for (var ma : c.getManaAbilities()) {
+                if (ma.getActivatingPlayer() == null && c.getController() != null) ma.setActivatingPlayer(c.getController());
                 var part = ma.getManaPart();
                 try {
                     if (part != null && (part.canProduce("U", ma) || part.canProduce("W", ma))) { interactive++; break; }
@@ -267,12 +270,13 @@ public final class OpponentStrategy {
 
     /** Plays that materially affect this turn's combat. */
     private static boolean combatRelevant(SpellAbility sa, Card card, Player ai) {
+        if (ActionSequencer.precombatText(card.getOracleText())) return true;
         var api = sa.getApi();
         if (api == ApiType.Pump || api == ApiType.PumpAll || api == ApiType.Destroy || api == ApiType.DealDamage
             || api == ApiType.Tap || api == ApiType.TapAll || api == ApiType.PutCounter) return true;
         if (api == ApiType.ChangeZone) {
             String dest = sa.getParam("Destination");
-            if (dest != null && (dest.equals("Exile") || dest.equals("Hand"))) return true;
+            if ("Battlefield".equals(sa.getParam("Origin")) && ("Exile".equals(dest) || "Hand".equals(dest))) return true;
         }
         if (api == ApiType.Attach) {
             for (Card c : ai.getCardsIn(ZoneType.Battlefield)) if (c.isCreature() && !c.isTapped()) return true;
@@ -282,14 +286,15 @@ public final class OpponentStrategy {
 
     /** Single-target Destroy / damage / exile-or-bounce spells; mass removal uses separate API types. */
     private static boolean isSingleTargetRemoval(SpellAbility sa, Card card) {
-        if (!sa.isSpell()) return false;
-        var api = sa.getApi();
-        if (api == ApiType.Destroy || api == ApiType.DealDamage) return true;
-        if (api == ApiType.ChangeZone) {
-            String dest = sa.getParam("Destination");
-            return dest != null && (dest.equals("Exile") || dest.equals("Hand") || dest.equals("Library"));
+        boolean playerTarget = false, nonBattlefieldTarget = false;
+        for (var choices : sa.getAllTargetChoices()) for (var target : choices) {
+            if (target instanceof Player) playerTarget = true;
+            if (target instanceof Card c && !c.isInZone(ZoneType.Battlefield)) nonBattlefieldTarget = true;
         }
-        return false;
+        var api = sa.getApi();
+        return RemovalPolicy.applies(sa.isSpell(), sa.usesTargeting() ? sa.getMaxTargets() : 0,
+            api == null ? "" : api.name(), sa.getParam("Origin"), sa.getParam("Destination"),
+            playerTarget, nonBattlefieldTarget);
     }
 
     /** Threat score of the removal target, or the best opposing permanent when untargeted; -1 vetoes. */
@@ -386,6 +391,9 @@ public final class OpponentStrategy {
         boolean locksBotWin = kind == ThreatAssessment.Kind.STAX && !ownCombos.isEmpty();
         boolean policesLeader = kind == ThreatAssessment.Kind.STAX && archenemy != null && !ownerLeads && opponents.size() > 1;
         int score = ThreatAssessment.permanentThreat(kind, ownerLeads, locksBotWin, policesLeader);
+        if (kind == ThreatAssessment.Kind.OTHER && card.isCreature()) {
+            score = Math.max(score, ThreatAssessment.creatureThreat(card.getNetPower(), card.getNetToughness(), card.getCMC()));
+        }
         // v0.45: a buff on the stack aimed at this permanent makes answering it urgent.
         if (isTargetedByOpponentBuffOnStack(card, ai)) score += 40;
         boolean otherBucketOne = false;

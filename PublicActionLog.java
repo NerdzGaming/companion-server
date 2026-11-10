@@ -17,7 +17,6 @@ public final class PublicActionLog {
     private long sequence;
     PublicActionLog(Game game) { this.game = game; }
     static String name(CardView c) { return c == null || c.isFaceDown() ? "Face-down card" : c.getName(); }
-    private static boolean visible(ZoneType z) { return z == ZoneType.Battlefield || z == ZoneType.Graveyard || z == ZoneType.Exile || z == ZoneType.Command || z == ZoneType.Stack; }
     /** Library→hand moves are classified once Forge marks draws (it sets the flag just after the move). */
     private final List<Object[]> pendingLibraryHand = new ArrayList<>();
     private void flushPending() {
@@ -49,7 +48,10 @@ public final class PublicActionLog {
         if (cards.isEmpty()) return;
         add("reveal", owner + " reveals " + String.join(", ", cards) + (zone == null ? "" : " from their " + zone) + ".");
     }
+    /** v0.55: public announcements such as chosen creature types, colours, names and trigger order. */
+    void choice(String text) { add("choice", text); }
     void manaAction(String source) { add("mana", "Activates " + source + " for mana."); }
+    void mulligan(String text) { add("mulligan", text); }
     synchronized List<Map<String, Object>> snapshot() { flushPending(); return new ArrayList<>(entries); }
     @Subscribe public void turn(GameEventTurnBegan e) { add("state", "Turn " + e.turnNumber() + " begins — " + e.turnOwner().getName() + "."); }
     @Subscribe public void phase(GameEventTurnPhase e) { add("state", e.playerTurn().getName() + " enters " + e.phase().name() + "."); }
@@ -66,7 +68,18 @@ public final class PublicActionLog {
     @Subscribe public void land(GameEventLandPlayed e) { add("state", e.player().getName() + " plays " + name(e.land()) + "."); }
     @Subscribe public void cast(GameEventSpellAbilityCast e) {
         // Do not include targetDescription or arbitrary stack text: either may contain hidden identities.
-        add("spell", e.si().getActivatingPlayer().getName() + (e.sa().isSpell() ? " casts " : e.si().isTrigger() ? " triggers " : " activates ") + name(e.sa().getHostCard()) + ".");
+        if (!"player".equals(e.si().getActivatingPlayer().getName())) MatchWorker.loop.opponentResponse();
+        String[] suffix = { "" };
+        game.getStack().forEach(item -> { if (item.getId() == e.si().getId()) suffix[0] = xSuffix(item.getSpellAbility()); });
+        add("spell", e.si().getActivatingPlayer().getName() + (e.sa().isSpell() ? " casts " : e.si().isTrigger() ? " triggers " : " activates ") + name(e.sa().getHostCard()) + suffix[0] + ".");
+    }
+    /** X is announced publicly (CR 601.2b) for both seats, so every cast/activation shows it. */
+    static String xSuffix(forge.game.spellability.SpellAbility sa) {
+        try {
+            Integer x = sa.getXManaCostPaid();
+            boolean hasX = x != null || (sa.getPayCosts() != null && sa.getPayCosts().hasXInAnyCostPart());
+            return hasX ? " (X = " + (x == null ? 0 : x) + ")" : "";
+        } catch (RuntimeException ignored) { return ""; }
     }
     @Subscribe public void resolve(GameEventSpellResolved e) { add("spell", name(e.spell().getHostCard()) + (e.hasFizzled() ? " fizzles." : " resolves.")); }
     @Subscribe public void tap(GameEventCardTapped e) { if (e.card().getZone() == ZoneType.Battlefield) add("state", (e.tapped() ? "Taps " : "Untaps ") + name(e.card()) + "."); }
@@ -75,7 +88,11 @@ public final class PublicActionLog {
         for (var item : e.attackersMap().entries()) add("combat", e.player().getName() + " attacks with " + name(item.getValue()) + ".");
     }
     @Subscribe public void block(GameEventBlockersDeclared e) {
-        for (var group : e.blockers().values()) for (var item : group.entries()) add("combat", name(item.getValue()) + " blocks " + name(item.getKey()) + ".");
+        for (var group : e.blockers().values()) for (var item : group.entries()) {
+            // Forge inserts attacker→attacker for unblocked combat UI drawing.
+            if (item.getKey().getId() == item.getValue().getId()) continue;
+            add("combat", name(item.getValue()) + " blocks " + name(item.getKey()) + ".");
+        }
     }
     @Subscribe public void shuffle(GameEventShuffle e) { add("state", e.player().getName() + " shuffles their library."); }
     @Subscribe public void damage(GameEventCardDamaged e) { add("combat", name(e.card()) + " takes " + e.amount() + " damage."); }
@@ -89,22 +106,7 @@ public final class PublicActionLog {
             MatchWorker.emit(MatchWorker.snapshot(game));
             return;
         }
-        if (!visible(from) && !visible(to)) return;
-        // Casting and resolving already have their own lines.
-        if (to == ZoneType.Stack || from == ZoneType.Stack && to == ZoneType.Graveyard) return;
-        forge.game.card.Card real = game.findByView(e.card());
-        if (from == ZoneType.Hand && to == ZoneType.Battlefield && real != null && real.isLand()) return; // "plays" line covers it
         String owner = e.to() != null && e.to().player() != null ? e.to().player().getName() : e.from() != null && e.from().player() != null ? e.from().player().getName() : "A player";
-        // Mask a card entering a hidden zone even if its previous identity was public.
-        String card = visible(to) || visible(from) ? name(e.card()) : "A card";
-        String text;
-        if (to == ZoneType.Battlefield) text = card + " enters the battlefield" + (from == null ? "" : from == ZoneType.Graveyard ? " from the graveyard" : from == ZoneType.Exile ? " from exile" : from == ZoneType.Library ? " from the library" : "") + ".";
-        else if (to == ZoneType.Graveyard) text = from == ZoneType.Battlefield ? card + " goes to the graveyard." : from == ZoneType.Hand ? owner + " discards " + card + "." : from == ZoneType.Library ? card + " is milled." : card + " goes to the graveyard.";
-        else if (to == ZoneType.Exile) text = card + " is exiled" + (from == ZoneType.Battlefield ? "" : from == ZoneType.Graveyard ? " from the graveyard" : from == ZoneType.Hand ? " from hand" : from == ZoneType.Library ? " from the library" : "") + ".";
-        else if (to == ZoneType.Hand) text = card + " returns to " + owner + "'s hand.";
-        else if (to == ZoneType.Library) text = card + " is put into " + owner + "'s library.";
-        else if (to == ZoneType.Command) text = card + " goes to the command zone.";
-        else text = card + " leaves the game.";
-        add("move", text);
+        add("move", ZoneMovement.describe(owner, name(e.card()), from == null ? null : from.name(), to == null ? null : to.name()));
     }
 }

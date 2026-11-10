@@ -1,4 +1,11 @@
-# Companion Server v0.54.6
+# Companion Server v0.57
+
+## v0.57: cast-log build fix and guarded loop recording
+- Resolve the full spell ability by the cast event's stack-instance ID before reading X; the event itself supplies view objects, not SpellAbility.
+- Record one manual cycle at empty-stack human priority, finish at the same boundary, then replay 1–1000 additional repetitions. Decisions stay in the isolated match worker, with exact legal source/target identities and remapped option indexes.
+- Preserve every engine action and opponent priority window. Stop on an opponent cast/activation/trigger, a changed/missing/ambiguous choice, turn/phase change, unsupported decision, timeout, or Stop loop. New token/card IDs and non-deterministic choices need manual intervention; this is not a freeform infinite-state shortcut.
+- Recording holds Full control on the website. Start, finish and run require empty-stack priority; the stop icon stays available during execution. Existing Auto-pay and chosen floating-mana payment remain available.
+- Deploy this package to Render and publish the matching website. Full pinned-engine compilation and live signed-in loop validation remain deployment checks.
 
 ## v0.54.6: stack token identity and accurate blocking logs
 - Stack entries retain public host token/type/power/toughness metadata for face-aware artwork. Face-down hosts do not expose these details.

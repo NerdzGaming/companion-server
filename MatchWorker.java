@@ -34,6 +34,9 @@ public final class MatchWorker {
     static final ObjectMapper JSON = new ObjectMapper();
     static PrintStream out;
     static PublicActionLog actionLog;
+    static final LoopMacro loop = new LoopMacro();
+    static final List<Map<String, Object>> publicReveals = new ArrayList<>();
+    static final String opponentDisplayName = MatchNames.aiName(java.util.concurrent.ThreadLocalRandom.current().nextInt(3));
 
     public static void main(String[] args) throws Exception {
         out = new PrintStream(new java.io.FileOutputStream(java.io.FileDescriptor.out), true, StandardCharsets.UTF_8);
@@ -71,6 +74,7 @@ public final class MatchWorker {
         actionLog = new PublicActionLog(game);
         game.subscribeToEvents(actionLog);
         forge.game.NerdzReveal.install(HumanBridgeController::publicReveal);
+        forge.game.NerdzReveal.installChoiceHook(HumanBridgeController::setChoiceBatch);
         emit(Map.of("type", "STATUS", "message", "Game started"));
 
         // Snapshots are produced on the game thread by public events and before prompts.
@@ -130,6 +134,7 @@ public final class MatchWorker {
         Player viewer = players.stream().filter(p -> p.getController() instanceof HumanBridgeController).findFirst().orElse(null);
         for (Player p : players) {
             Map<String, Object> side = new LinkedHashMap<>();
+            side.put("name", p == viewer ? "You" : opponentDisplayName);
             side.put("life", p.getLife());
             side.put("manaPool", manaPool(p));
             side.put("handCount", p.getCardsIn(ZoneType.Hand).size());
@@ -166,6 +171,11 @@ public final class MatchWorker {
             e.put("id", si.getId());
             e.put("cardId", host == null ? -1 : host.getId());
             e.put("name", host == null ? "Ability" : visibleName(host));
+            if (host != null && !host.isFaceDown()) {
+                e.put("token", host.isToken());
+                e.put("typeLine", host.getType().toString());
+                if (host.isCreature()) { e.put("power", host.getNetPower()); e.put("toughness", host.getNetToughness()); }
+            }
             e.put("controller", si.getActivatingPlayer() == null ? "" : si.getActivatingPlayer().getName());
             e.put("spell", sa.isSpell());
             e.put("copy", sa.isCopied() || (host != null && host.isCopiedSpell()));
@@ -179,7 +189,18 @@ public final class MatchWorker {
         s.put("stack", stack);
         try { s.put("stormCount", game.getStack().getSpellsCastThisTurn().size()); } catch (RuntimeException ignored) { }
         s.put("actionLog", actionLog == null ? List.of() : actionLog.snapshot());
+        s.put("loop", loop.status());
+        s.put("publicReveals", new ArrayList<>(publicReveals));
         return s;
+    }
+
+    static void publishReveal(Map<String, Object> event) {
+        event.put("id", "reveal-" + java.util.UUID.randomUUID());
+        event.put("private", false);
+        event.put("audience", List.of("player", "opponent"));
+        publicReveals.add(event);
+        if (publicReveals.size() > 20) publicReveals.remove(0);
+        emit(event);
     }
 
     static List<Map<String, Object>> cards(Player p, ZoneType zone, boolean withState) {

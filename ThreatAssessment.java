@@ -87,6 +87,17 @@ public final class ThreatAssessment {
         return score >= 65 || endOfTurn || discarding || tempoWin;
     }
 
+    /** Sorcery removal gets a real casting window in our Main 2; negative scores stay protected. */
+    public static boolean removalAllowed(int score, boolean endOfTurn, boolean discarding, boolean tempoWin,
+                                         boolean sorcerySpeed, boolean ownMainTwo) {
+        return score >= 0 && (removalAllowed(score, endOfTurn, discarding, tempoWin) || (sorcerySpeed && ownMainTwo));
+    }
+
+    /** Current face-up creature size supplies a format-independent floor; named engine/combo buckets still win. */
+    public static int creatureThreat(int power, int toughness, int manaValue) {
+        return Math.min(95, 20 + 5 * Math.max(0, power) + 2 * Math.max(0, toughness) + 3 * Math.max(0, manaValue));
+    }
+
     /** Converts a threat score into an evaluator bonus; below-threshold pieces are not boosted, policing stax is protected. */
     public static int evaluatorBonus(int score) {
         if (score < 0) return -120;

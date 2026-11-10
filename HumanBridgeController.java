@@ -80,7 +80,11 @@ public final class HumanBridgeController extends PlayerControllerAi {
             try (BufferedReader r = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8))) {
                 String line;
                 while ((line = r.readLine()) != null) {
-                    try { INBOX.put(MatchWorker.JSON.readTree(line)); } catch (Exception ignored) { }
+                    try {
+                        JsonNode message = MatchWorker.JSON.readTree(line);
+                        if ("LOOP".equals(message.path("type").asText()) && "STOP".equals(message.path("command").asText())) MatchWorker.loop.requestStop();
+                        INBOX.put(message);
+                    } catch (Exception ignored) { }
                 }
             } catch (Exception ignored) { }
         });
@@ -91,6 +95,11 @@ public final class HumanBridgeController extends PlayerControllerAi {
 
     private final List<Card> temporaryLook = new ArrayList<>();
     private final List<Card> recentLook = new ArrayList<>();
+    /** Full looked-at batch captured by the engine before filtering; one match per JVM. */
+    private static volatile List<Card> activeChoiceBatch = List.of();
+    public static void setChoiceBatch(CardCollectionView cards, ZoneType zone, Player owner, SpellAbility sa) {
+        List<Card> copy = new ArrayList<>(); for (Card c : cards) copy.add(c); activeChoiceBatch = copy;
+    }
 
     @Override public void tempShowCards(Iterable<Card> cards) {
         temporaryLook.clear();
@@ -112,6 +121,22 @@ public final class HumanBridgeController extends PlayerControllerAi {
         Map<String, Object> p = new LinkedHashMap<>();
         p.put("type", "PROMPT"); p.put("kind", kind); p.put("promptId", id);
         p.putAll(body);
+        JsonNode loopPrompt = MatchWorker.JSON.valueToTree(p);
+        var phase = getPlayer().getGame().getPhaseHandler();
+        String loopScope = phase.getTurn() + ":" + phase.getPhase();
+        // Every replay still returns through the normal engine action/priority lifecycle.
+        if (MatchWorker.loop.active()) {
+            try {
+                JsonNode control;
+                while ((control = INBOX.poll(60, TimeUnit.MILLISECONDS)) != null) {
+                    if ("LOOP".equals(control.path("type").asText())) MatchWorker.loop.command(control.path("command").asText(), control.path("count").asInt(), loopPrompt, loopScope);
+                    else { INBOX.offer(control); break; }
+                }
+            } catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
+        }
+        JsonNode replay = MatchWorker.loop.replay(loopPrompt, loopScope);
+        if (replay != null) return replay;
+        MatchWorker.emit(MatchWorker.snapshot(getPlayer().getGame()));
         MatchWorker.emit(p);
         long deadline = System.currentTimeMillis() + TimeUnit.MINUTES.toMillis(TIMEOUT_MIN);
         try {
@@ -123,9 +148,20 @@ public final class HumanBridgeController extends PlayerControllerAi {
                     deadline = System.currentTimeMillis() + TimeUnit.MINUTES.toMillis(TIMEOUT_MIN);
                     continue;
                 }
-                if (id.equals(m.path("promptId").asText())) return m;
+                if ("LOOP".equals(m.path("type").asText())) {
+                    MatchWorker.loop.command(m.path("command").asText(), m.path("count").asInt(), loopPrompt, loopScope);
+                    MatchWorker.emit(MatchWorker.snapshot(getPlayer().getGame()));
+                    JsonNode next = MatchWorker.loop.replay(loopPrompt, loopScope);
+                    if (next != null) return next;
+                    continue;
+                }
+                if (id.equals(m.path("promptId").asText())) {
+                    MatchWorker.loop.record(loopPrompt, m, loopScope);
+                    return m;
+                }
             }
         } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+        MatchWorker.loop.stop("Decision timed out.");
         MatchWorker.emit(Map.of("type", "NOTICE", "message", "SURVEIL".equals(kind) ? "No answer in time — the cards stay on top in their original order." : "No answer in time — Forge AI decided for you."));
         return null;
     }
@@ -141,6 +177,7 @@ public final class HumanBridgeController extends PlayerControllerAi {
 
     @Override
     public List<SpellAbility> chooseSpellAbilityToPlay() {
+        activeChoiceBatch = List.of();
         recentLook.clear();
         temporaryLook.clear();
         Player me = getPlayer();
@@ -216,13 +253,9 @@ public final class HumanBridgeController extends PlayerControllerAi {
             }
             if (!sa.canPlay()) continue;
             if (sa.isManaAbility()) {
-                if (activateHumanMana(sa)) {
-                    MatchWorker.recordManaAction(sa);
-                    // v0.33: mana abilities re-prompt inside this loop, so checkpoint the tapped state; Undo then untaps only this source.
-                    undo.checkpoint(me.getGame(), me);
-                }
-                else MatchWorker.emit(Map.of("type", "NOTICE", "message", "Mana ability could not be activated."));
-                continue; // mana abilities do not use the stack; keep priority
+                // Let PhaseHandler execute this action, reset the priority-pass sequence and
+                // check SBAs/triggers before offering priority again (including Food Chain).
+                return List.of(sa);
             }
             // Do not call getAi().canPlaySa here: it is a strategic decision, not a legality check.
             List<SpellAbility> out = new ArrayList<>();
@@ -395,7 +428,7 @@ public final class HumanBridgeController extends PlayerControllerAi {
     @Override
     public void declareBlockers(Player defender, Combat combat) {
         List<Card> blockers = new ArrayList<>();
-        for (Card c : defender.getCreaturesInPlay()) if (CombatUtil.canBlock(c, combat)) blockers.add(c);
+        for (Card c : defender.getCreaturesInPlay()) if (CombatUtil.canBlock(c)) blockers.add(c);
         List<Card> attackers = new ArrayList<>(combat.getAttackers());
         if (blockers.isEmpty() || attackers.isEmpty()) return;
         List<Map<String, Object>> at = new ArrayList<>(), bl = new ArrayList<>();
@@ -408,6 +441,7 @@ public final class HumanBridgeController extends PlayerControllerAi {
             for (Card atk : attackers) if (legalBlock(atk, b, combat)) ok.add(atk.getId());
             legal.put(String.valueOf(b.getId()), ok);
         }
+        while (true) {
         JsonNode a = ask("BLOCK", Map.of("attackers", at, "blockers", bl, "legal", legal));
         // v0.39: never let the AI pick blocks for the human; an unanswered prompt means no blocks.
         if (a == null) { MatchWorker.emit(Map.of("type", "NOTICE", "message", "No block chosen — your creatures did not block.")); return; }
@@ -421,12 +455,21 @@ public final class HumanBridgeController extends PlayerControllerAi {
             else refused.add(blk.getName() + " can't block " + atk.getName());
         }
         if (!refused.isEmpty()) MatchWorker.emit(Map.of("type", "NOTICE", "message", String.join("; ", refused) + "."));
+        String error = CombatUtil.validateBlocks(combat, defender);
+        if (error == null && refused.isEmpty()) return;
+        // Validate the entire submitted group, then reprompt rather than silently accepting illegal blocks.
+        for (Card blocker : blockers) combat.undoBlockingAssignment(blocker);
+        MatchWorker.emit(Map.of("type", "NOTICE", "message", error == null ? "Please choose legal blockers." : error));
+        }
     }
 
-    /** Evasion (flying, shadow, landwalk, "can't be blocked except by") plus combat limits; both checks must pass. */
+    /** Offer untapped/evasion-legal pairs independently of partial group assignments.
+     * Summoning sickness restricts attacking/tap abilities, not blocking (CR 302.6).
+     * Forge validates the complete assignment for menace, lure and blocker limits afterward.
+     */
     private static boolean legalBlock(Card attacker, Card blocker, Combat combat) {
         try {
-            return CombatUtil.canBlock(blocker, combat) && CombatUtil.canBlock(attacker, blocker) && CombatUtil.canBlock(attacker, blocker, combat);
+            return CombatUtil.canBlock(blocker) && CombatUtil.canBlock(attacker, blocker);
         } catch (RuntimeException e) { return false; }
     }
 
@@ -572,6 +615,7 @@ public final class HumanBridgeController extends PlayerControllerAi {
     /** Only explicit effect memory or an active UI batch; never read a library to fill missing context. */
     private List<Card> choiceContext(SpellAbility sa, DelayedReveal delayed) {
         List<Card> context = revealContext(delayed);
+        if (context.isEmpty()) context.addAll(activeChoiceBatch);
         if (context.isEmpty()) context.addAll(temporaryLook);
         if (sa != null && sa.getHostCard() != null
                 && sa.getParamOrDefault("Choices", "").contains("IsRemembered")) {
@@ -581,6 +625,7 @@ public final class HumanBridgeController extends PlayerControllerAi {
         if (context.isEmpty() && sa != null && (sa.getApi() == ApiType.Dig || sa.getApi() == ApiType.DigMultiple)) context.addAll(recentLook);
         Map<Integer, Card> unique = new LinkedHashMap<>();
         for (Card c : context) unique.putIfAbsent(c.getId(), c);
+        // Context only adds display cards; legal options stay as offered by the engine.
         return new ArrayList<>(unique.values());
     }
 
@@ -599,7 +644,7 @@ public final class HumanBridgeController extends PlayerControllerAi {
             Set<String> chosen = keys(a);
             List<T> out = new ArrayList<>();
             for (T o : options) if (chosen.contains(key(o))) out.add(o);
-            if (RevealChoices.valid(valid, chosen, min, max) && out.size() == chosen.size()) return out;
+            if (RevealChoices.valid(valid, chosen, min, max) && out.size() == chosen.size()) { if (context != null && !context.isEmpty()) activeChoiceBatch = List.of(); return out; }
             MatchWorker.emit(Map.of("type", "NOTICE", "message", "That selection is not valid. Please choose again."));
         }
     }
@@ -667,6 +712,15 @@ public final class HumanBridgeController extends PlayerControllerAi {
     public boolean playChosenSpellAbility(SpellAbility sa) {
         sa.setActivatingPlayer(getPlayer());
         if (sa.isLandAbility()) { if (!sa.canPlay()) return false; sa.resolve(); return true; }
+        if (sa.isManaAbility()) {
+            if (!activateHumanMana(sa)) {
+                MatchWorker.emit(Map.of("type", "NOTICE", "message", "Mana ability could not be activated."));
+                return false;
+            }
+            MatchWorker.recordManaAction(sa);
+            getPlayer().getGame().getUndoManager().checkpoint(getPlayer().getGame(), getPlayer());
+            return true;
+        }
         return castWithHumanChoices(sa);
     }
 
@@ -756,10 +810,15 @@ public final class HumanBridgeController extends PlayerControllerAi {
             }
         }
         List<Map<String, Object>> opts = new ArrayList<>();
+        Map<String, Integer> offeredSources = new LinkedHashMap<>(), tapSources = new LinkedHashMap<>();
         for (int i = 0; i < sources.size(); i++) {
             SpellAbility ma = sources.get(i);
             Map<String, Object> m = new LinkedHashMap<>(entity(ma.getHostCard()));
             m.put("key", "m" + i);
+            boolean hasTapCost = ma.getPayCosts() != null && ma.getPayCosts().hasTapCost();
+            m.put("hasTapCost", hasTapCost);
+            offeredSources.put("m" + i, ma.getHostCard().getId());
+            if (hasTapCost) tapSources.put("m" + i, ma.getHostCard().getId());
             String d = ma.getDescription();
             boolean multi = ma.getHostCard().getManaAbilities().size() > 1;
             m.put("label", ma.getHostCard().getName() + (multi && d != null && !d.isBlank() ? " — " + d : ""));
@@ -790,6 +849,10 @@ public final class HumanBridgeController extends PlayerControllerAi {
         while (true) {
             a = ask("MANA", body);
             if (a == null) return null;
+            if (!a.path("auto").asBoolean(false) && !ManaPaymentChoices.validSourceSelection(offeredSources, tapSources, keys(a))) {
+                MatchWorker.emit(Map.of("type", "NOTICE", "message", "Choose one tap ability per mana source. A land cannot tap for both colour options at once."));
+                continue;
+            }
             Map<String, Integer> offered = new LinkedHashMap<>(), selected = new LinkedHashMap<>();
             for (Map<String, Object> shard : shards) offered.put((String) shard.get("key"), (Integer) shard.get("count"));
             boolean valid = !a.has("phyrexian") || a.path("phyrexian").isObject();
@@ -819,13 +882,69 @@ public final class HumanBridgeController extends PlayerControllerAi {
     }
 
     /** True when this bridge should pick for the trigger itself instead of Forge AI's doTrigger. */
+    /**
+     * v0.50: every trigger the human controls goes through the bridge (Charm/TargetingPlayer keep the
+     * engine's own chooser). Previously mandatory untargeted attack triggers fell back to Forge AI's
+     * doTrigger, which could veto them so they never reached the stack or never applied.
+     */
     private boolean humanTrigger(SpellAbility sa) {
-        return sa.getApi() != ApiType.Charm && !sa.hasParam("TargetingPlayer")
-            && (chainTargets(sa) || sa.isOptionalTrigger() || costedTrigger(sa) || reflexive(sa));
+        return sa.getApi() != ApiType.Charm && !sa.hasParam("TargetingPlayer");
+    }
+
+    /** Triggers the player already accepted when they went on the stack; resolution must not re-ask Forge AI. */
+    private final Set<SpellAbility> acceptedTriggers = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+
+    private void markAccepted(SpellAbility sa) {
+        if (acceptedTriggers.size() > 512) acceptedTriggers.clear();
+        acceptedTriggers.add(sa);
+        if (sa instanceof WrappedAbility w && w.getWrappedAbility() != null) acceptedTriggers.add(w.getWrappedAbility());
+    }
+
+    /** True when the trigger's "you may" was already answered by the player, consuming the mark. */
+    static boolean consumeAccepted(Set<SpellAbility> accepted, SpellAbility wrapper, SpellAbility inner) {
+        boolean hit = accepted.remove(wrapper);
+        if (inner != null) hit = accepted.remove(inner) || hit;
+        return hit;
+    }
+
+    /**
+     * v0.50: WrappedAbility.resolve() asks the decider's confirmTrigger. The inherited AI version clears
+     * targets and re-runs doTrigger, silently fizzling triggers (attack triggers especially) the player chose.
+     */
+    @Override
+    public boolean confirmTrigger(WrappedAbility wrapper) {
+        if (wrapper.isMandatory()) return true;
+        if (consumeAccepted(acceptedTriggers, wrapper, wrapper.getWrappedAbility())) return true;
+        JsonNode a = ask("CONFIRM", Map.of("source", src(wrapper), "message", "Use triggered ability: " + wrapper.getStackDescription() + "?"));
+        if (a == null) return true; // inactivity fallback: optional triggers default to resolving, never AI veto
+        return a.path("yes").asBoolean(false);
+    }
+
+    /**
+     * v0.50: resolving trigger effects for the player. The AI version pays with AiCostDecision and gates on AI
+     * affordability heuristics, which could abort before AbilityUtils.resolve ever ran.
+     */
+    @Override
+    public void playSpellAbilityNoStack(SpellAbility effectSA, boolean canSetupTargets) {
+        if (effectSA.getActivatingPlayer() == null) effectSA.setActivatingPlayer(getPlayer());
+        if (effectSA.getActivatingPlayer() != getPlayer()) { super.playSpellAbilityNoStack(effectSA, canSetupTargets); return; }
+        if (canSetupTargets && chainTargets(effectSA) && !humanTargets(effectSA)) return;
+        resolveHumanNoStack(effectSA);
+    }
+
+    private boolean resolveHumanNoStack(SpellAbility sa) {
+        Cost cost = sa.getPayCosts();
+        if (hasCost(cost)) {
+            if (!canPayHumanCost(cost, sa, true)) return false;
+            if (!new CostPayment(cost, sa).payComputerCosts(new HumanCostDecision(getPlayer(), sa, true))) return false;
+        }
+        AbilityUtils.resolve(sa);
+        return true;
     }
 
     /** v0.46: "you may pay {E}{E}{E}" style trigger costs — the player decides, not Forge AI. */
     private static boolean costedTrigger(SpellAbility sa) {
+        if (sa instanceof WrappedAbility w && w.getWrappedAbility() != null && hasCost(w.getWrappedAbility().getPayCosts())) return true;
         return hasCost(sa.getPayCosts());
     }
 
@@ -847,20 +966,45 @@ public final class HumanBridgeController extends PlayerControllerAi {
             JsonNode a = ask("CONFIRM", Map.of("source", src(sa), "message", "Use triggered ability: " + sa.getStackDescription() + "?"));
             if (a != null && !a.path("yes").asBoolean(false)) return false;
         } else if (costedTrigger(sa)) {
-            Cost c = sa.getPayCosts();
+            Cost c = sa instanceof WrappedAbility w && w.getWrappedAbility() != null && hasCost(w.getWrappedAbility().getPayCosts())
+                ? w.getWrappedAbility().getPayCosts() : sa.getPayCosts();
             String what = hasCost(c) ? "Pay " + c.toSimpleString() + " for " : "Use ";
             JsonNode a = ask("CONFIRM", Map.of("source", src(sa), "message", what + sa.getStackDescription() + "?"));
             if (a != null && !a.path("yes").asBoolean(false)) return false;
         }
-        if (!chainTargets(sa)) return true;
-        return humanTargets(sa);
+        if (chainTargets(sa) && !humanTargets(sa)) return false;
+        markAccepted(sa);
+        return true;
+    }
+
+    /** v0.55 (CR 603.3b): the player orders simultaneous triggers; the first chosen goes on the stack first and resolves last. */
+    private List<SpellAbility> humanTriggerOrder(List<SpellAbility> engineOrder) {
+        List<SpellAbility> remaining = new ArrayList<>(engineOrder);
+        if (remaining.size() < 2) return remaining;
+        List<SpellAbility> out = new ArrayList<>();
+        while (remaining.size() > 1) {
+            String title = "Order triggers: choose the one to put on the stack " + (out.isEmpty() ? "first (it resolves last)" : "next") + " · " + remaining.size() + " left";
+            List<SpellAbility> got = pick("CHOOSE", title, null, remaining, 1, 1);
+            if (got == null || got.isEmpty()) { out.addAll(remaining); return out; }
+            out.add(got.get(0)); remaining.remove(got.get(0));
+        }
+        out.addAll(remaining);
+        if (MatchWorker.actionLog != null) {
+            List<String> names = new ArrayList<>();
+            for (SpellAbility s : out) names.add(s.getHostCard() == null ? "trigger" : s.getHostCard().getName());
+            MatchWorker.actionLog.choice(getPlayer().getName() + " orders triggers (first on stack → last): " + String.join(", ", names) + ".");
+        }
+        return out;
     }
 
     @Override
     public void orderAndPlaySimultaneousSa(List<SpellAbility> activePlayerSAs) {
-        for (SpellAbility sa : orderSimultaneousSa(activePlayerSAs)) {
+        for (SpellAbility sa : humanTriggerOrder(orderSimultaneousSa(activePlayerSAs))) {
             if (sa.isTrigger() && !sa.isCopied() && humanTrigger(sa)) {
-                if (prepareHumanTrigger(sa)) ComputerUtil.playStack(sa, getPlayer(), getGame());
+                if (prepareHumanTrigger(sa) && !ComputerUtil.playStack(sa, getPlayer(), getGame())) {
+                    // Trigger wrappers cost nothing to put on the stack; never let an AI affordability check drop one.
+                    getGame().getStack().add(sa);
+                }
             } else {
                 super.orderAndPlaySimultaneousSa(new ArrayList<>(List.of(sa)));
             }
@@ -871,7 +1015,7 @@ public final class HumanBridgeController extends PlayerControllerAi {
     public boolean playTrigger(Card host, WrappedAbility wrapperAbility, boolean isMandatory) {
         if (!humanTrigger(wrapperAbility)) return super.playTrigger(host, wrapperAbility, isMandatory);
         if (!prepareHumanTrigger(wrapperAbility)) return false;
-        return ComputerUtil.playNoStack(wrapperAbility.getActivatingPlayer(), wrapperAbility, getGame(), true);
+        return resolveHumanNoStack(wrapperAbility);
     }
 
     /** Engine bounds apply; estimates must not force X to zero or cap legal large values. */
@@ -905,7 +1049,11 @@ public final class HumanBridgeController extends PlayerControllerAi {
             JsonNode a = ask("NUMBER", body);
             if (a == null) return super.announceRequirements(ability, min, cap, announce);
             JsonNode value = a.path("value");
-            if (value.isIntegralNumber() && value.canConvertToInt() && value.asInt() >= min && value.asInt() <= cap) return value.asInt();
+            if (value.isIntegralNumber() && value.canConvertToInt() && value.asInt() >= min && value.asInt() <= cap) {
+                if (MatchWorker.actionLog != null && "X".equalsIgnoreCase(announce))
+                    MatchWorker.actionLog.choice(getPlayer().getName() + " announces X = " + value.asInt() + (ability.getHostCard() == null ? "" : " for " + ability.getHostCard().getName()) + ".");
+                return value.asInt();
+            }
             MatchWorker.emit(Map.of("type", "NOTICE", "message", "Choose a number within the offered range."));
         }
     }
@@ -943,8 +1091,9 @@ public final class HumanBridgeController extends PlayerControllerAi {
         Map<String, Object> body = new LinkedHashMap<>();
         String text = message == null || message.isBlank() ? "Do you want to do this?" : message;
         // v0.35: commander moving to graveyard/exile names the card and both destinations.
-        if (mode == PlayerActionConfirmMode.ChangeZoneToAltDestination && sa != null && sa.getHostCard() != null && sa.getHostCard().isCommander()) {
-            Card cmd = sa.getHostCard();
+        Card movedCard = cardToShow != null ? cardToShow : sa == null ? null : sa.getHostCard();
+        if (mode == PlayerActionConfirmMode.ChangeZoneToAltDestination && movedCard != null && movedCard.isRealCommander() && movedCard.getOwner() == getPlayer()) {
+            Card cmd = movedCard;
             text = "Your commander " + cmd.getName() + " is going to the " + zoneLabel(cmd.getZone() == null ? null : cmd.getZone().getZoneType()) + ". Move it to the command zone instead?";
             body.put("commanderMove", true); body.put("card", card(cmd));
             body.put("yesLabel", "Command zone"); body.put("noLabel", "Leave it there");
@@ -1001,7 +1150,12 @@ public final class HumanBridgeController extends PlayerControllerAi {
             Set<String> chosen = keys(a);
             List<String> out = new ArrayList<>();
             for (String o : options) if (chosen.contains(o)) out.add(o);
-            if (out.size() >= min && out.size() <= max && out.size() == chosen.size()) return out;
+            if (out.size() >= min && out.size() <= max && out.size() == chosen.size()) {
+                // v0.55: types, colours, names and numbers are announced publicly, so the log records them.
+                if (MatchWorker.actionLog != null && !out.isEmpty())
+                    MatchWorker.actionLog.choice(getPlayer().getName() + " chooses " + String.join(", ", out) + (sa == null || sa.getHostCard() == null ? "" : " for " + sa.getHostCard().getName()) + ".");
+                return out;
+            }
             MatchWorker.emit(Map.of("type", "NOTICE", "message", "That selection is not valid. Please choose again."));
         }
     }
@@ -1150,11 +1304,33 @@ public final class HumanBridgeController extends PlayerControllerAi {
 
     @Override
     public CardCollection chooseCardsToDiscardFrom(Player p, SpellAbility sa, CardCollection validCards, int min, int max, CardCollectionView visibleToChooser) {
-        if (p != getPlayer()) return super.chooseCardsToDiscardFrom(p, sa, validCards, min, max, visibleToChooser);
-        List<Card> list = new ArrayList<>(validCards);
-        if (list.size() <= min) return new CardCollection(list);
-        List<Card> got = pick("CHOOSE", "Choose cards to discard", sa, list, min, Math.min(max, list.size()));
+        // Forge calls the chooser's controller; p owns the affected hand, not the decision.
+        List<Card> visible = visibleToChooser == null ? new ArrayList<>(validCards) : new ArrayList<>(visibleToChooser);
+        var plan = DiscardChoices.regular(new ArrayList<>(validCards), visible, min, max);
+        if (plan.visible().isEmpty() && plan.valid().isEmpty()) return new CardCollection();
+        String title = p == getPlayer() ? "Choose cards to discard" : "Choose cards for " + p.getName() + " to discard";
+        List<Card> got = pick("CHOOSE", title, sa, plan.valid(), plan.min(), plan.max(), plan.visible());
         return got != null ? new CardCollection(got) : super.chooseCardsToDiscardFrom(p, sa, validCards, min, max, visibleToChooser);
+    }
+
+    /** Thirst for Knowledge / Wrench Mind: the affected human chooses either payment. */
+    @Override
+    public CardCollectionView chooseCardsToDiscardUnlessType(int num, CardCollectionView hand, String[] types, SpellAbility sa) {
+        List<Card> cards = new ArrayList<>(hand);
+        if (cards.isEmpty()) return new CardCollection();
+        List<Card> matching = new ArrayList<>();
+        var restriction = forge.game.card.CardPredicates.restriction(types, sa.getActivatingPlayer(), sa.getHostCard(), sa);
+        for (Card c : cards) if (restriction.test(c)) matching.add(c);
+        boolean discardMatching = false;
+        if (!matching.isEmpty()) {
+            List<String> modes = pickStrings("Choose how to discard", sa,
+                List.of("Discard one matching card (" + String.join(" or ", types) + ")", "Discard " + Math.min(num, cards.size()) + " cards"), 1, 1);
+            if (modes == null) return super.chooseCardsToDiscardUnlessType(num, hand, types, sa);
+            discardMatching = modes.get(0).startsWith("Discard one matching card");
+        }
+        var plan = DiscardChoices.unlessType(cards, matching, num, discardMatching);
+        List<Card> got = pick("CHOOSE", "Choose cards to discard", sa, plan.valid(), plan.min(), plan.max(), plan.visible());
+        return got != null ? new CardCollection(got) : super.chooseCardsToDiscardUnlessType(num, hand, types, sa);
     }
 
     @Override
@@ -1267,7 +1443,9 @@ public final class HumanBridgeController extends PlayerControllerAi {
             List<Card> list = new ArrayList<>();
             for (Card c : valid) list.add(c);
             if (amount <= 0 || list.size() < amount) return fallback;
-            if (list.size() == amount) return PaymentDecision.card(new CardCollection(list));
+            // v0.55: pitch costs from hand (Force of Will, Force of Negation) always ask, even with one eligible card.
+            boolean fromHand = !list.isEmpty() && list.stream().allMatch(c -> c.isInZone(ZoneType.Hand));
+            if (list.size() == amount && !fromHand) return PaymentDecision.card(new CardCollection(list));
             List<Card> got = pick("CHOOSE", verb + " " + amount + " card" + (amount == 1 ? "" : "s") + " to pay the cost", ability, list, amount, amount);
             return got == null ? fallback : PaymentDecision.card(new CardCollection(got));
         }
@@ -1326,6 +1504,22 @@ public final class HumanBridgeController extends PlayerControllerAi {
         String prior = sa.getParam("AIPhyrexianPayment");
         sa.putParam("AIPhyrexianPayment", "Never");
         try {
+            // v0.56: manual mode spends the exact floating colours the player picked before any auto-fill.
+            if (!answer.path("auto").asBoolean(false) && answer.path("pool").isObject()) {
+                var picks = answer.path("pool").fields();
+                while (picks.hasNext() && !being.isPaid()) {
+                    var pick = picks.next();
+                    byte color = switch (pick.getKey()) {
+                        case "W" -> MagicColor.WHITE; case "U" -> MagicColor.BLUE; case "B" -> MagicColor.BLACK;
+                        case "R" -> MagicColor.RED; case "G" -> MagicColor.GREEN; case "C" -> (byte) forge.card.mana.ManaAtom.COLORLESS;
+                        default -> 0;
+                    };
+                    if (color == 0) continue;
+                    int n = Math.min(pick.getValue().asInt(0), me.getManaPool().getAmountOfColor(color));
+                    for (int i = 0; i < n && !being.isPaid(); i++)
+                        if (!me.getManaPool().tryPayCostWithColor(color, sa, being, sa.getPayingMana())) break;
+                }
+            }
             boolean paid = being.isPaid() || payAvoidingTargets(being, sa, me, effect);
             if (!paid) return false;
             if (life > 0) {
@@ -1417,7 +1611,7 @@ public final class HumanBridgeController extends PlayerControllerAi {
         if (MatchWorker.actionLog != null) MatchWorker.actionLog.revealed(owner.getName(), zone == null ? null : zoneLabel(zone), names);
         Map<String, Object> ev = new LinkedHashMap<>();
         ev.put("type", "REVEAL"); ev.put("player", owner.getName()); ev.put("zone", zone == null ? "" : zoneLabel(zone)); ev.put("cards", shown);
-        MatchWorker.emit(ev);
+        MatchWorker.publishReveal(ev);
     }
 
     /** v0.35: Convoke / Improvise — the player picks which untapped permanents help pay. */
