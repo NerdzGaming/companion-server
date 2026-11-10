@@ -48,6 +48,8 @@ public final class PublicActionLog {
         if (cards.isEmpty()) return;
         add("reveal", owner + " reveals " + String.join(", ", cards) + (zone == null ? "" : " from their " + zone) + ".");
     }
+    /** v0.55: public announcements such as chosen creature types, colours, names and trigger order. */
+    void choice(String text) { add("choice", text); }
     void manaAction(String source) { add("mana", "Activates " + source + " for mana."); }
     void mulligan(String text) { add("mulligan", text); }
     synchronized List<Map<String, Object>> snapshot() { flushPending(); return new ArrayList<>(entries); }

@@ -946,9 +946,29 @@ public final class HumanBridgeController extends PlayerControllerAi {
         return true;
     }
 
+    /** v0.55 (CR 603.3b): the player orders simultaneous triggers; the first chosen goes on the stack first and resolves last. */
+    private List<SpellAbility> humanTriggerOrder(List<SpellAbility> engineOrder) {
+        List<SpellAbility> remaining = new ArrayList<>(engineOrder);
+        if (remaining.size() < 2) return remaining;
+        List<SpellAbility> out = new ArrayList<>();
+        while (remaining.size() > 1) {
+            String title = "Order triggers: choose the one to put on the stack " + (out.isEmpty() ? "first (it resolves last)" : "next") + " · " + remaining.size() + " left";
+            List<SpellAbility> got = pick("CHOOSE", title, null, remaining, 1, 1);
+            if (got == null || got.isEmpty()) { out.addAll(remaining); return out; }
+            out.add(got.get(0)); remaining.remove(got.get(0));
+        }
+        out.addAll(remaining);
+        if (MatchWorker.actionLog != null) {
+            List<String> names = new ArrayList<>();
+            for (SpellAbility s : out) names.add(s.getHostCard() == null ? "trigger" : s.getHostCard().getName());
+            MatchWorker.actionLog.choice(getPlayer().getName() + " orders triggers (first on stack → last): " + String.join(", ", names) + ".");
+        }
+        return out;
+    }
+
     @Override
     public void orderAndPlaySimultaneousSa(List<SpellAbility> activePlayerSAs) {
-        for (SpellAbility sa : orderSimultaneousSa(activePlayerSAs)) {
+        for (SpellAbility sa : humanTriggerOrder(orderSimultaneousSa(activePlayerSAs))) {
             if (sa.isTrigger() && !sa.isCopied() && humanTrigger(sa)) {
                 if (prepareHumanTrigger(sa) && !ComputerUtil.playStack(sa, getPlayer(), getGame())) {
                     // Trigger wrappers cost nothing to put on the stack; never let an AI affordability check drop one.
@@ -1095,7 +1115,12 @@ public final class HumanBridgeController extends PlayerControllerAi {
             Set<String> chosen = keys(a);
             List<String> out = new ArrayList<>();
             for (String o : options) if (chosen.contains(o)) out.add(o);
-            if (out.size() >= min && out.size() <= max && out.size() == chosen.size()) return out;
+            if (out.size() >= min && out.size() <= max && out.size() == chosen.size()) {
+                // v0.55: types, colours, names and numbers are announced publicly, so the log records them.
+                if (MatchWorker.actionLog != null && !out.isEmpty())
+                    MatchWorker.actionLog.choice(getPlayer().getName() + " chooses " + String.join(", ", out) + (sa == null || sa.getHostCard() == null ? "" : " for " + sa.getHostCard().getName()) + ".");
+                return out;
+            }
             MatchWorker.emit(Map.of("type", "NOTICE", "message", "That selection is not valid. Please choose again."));
         }
     }
@@ -1383,7 +1408,9 @@ public final class HumanBridgeController extends PlayerControllerAi {
             List<Card> list = new ArrayList<>();
             for (Card c : valid) list.add(c);
             if (amount <= 0 || list.size() < amount) return fallback;
-            if (list.size() == amount) return PaymentDecision.card(new CardCollection(list));
+            // v0.55: pitch costs from hand (Force of Will, Force of Negation) always ask, even with one eligible card.
+            boolean fromHand = !list.isEmpty() && list.stream().allMatch(c -> c.isInZone(ZoneType.Hand));
+            if (list.size() == amount && !fromHand) return PaymentDecision.card(new CardCollection(list));
             List<Card> got = pick("CHOOSE", verb + " " + amount + " card" + (amount == 1 ? "" : "s") + " to pay the cost", ability, list, amount, amount);
             return got == null ? fallback : PaymentDecision.card(new CardCollection(got));
         }
