@@ -14,3 +14,4 @@
 - Commander SBA confirmations carry the actual moved card to its owner so transformed or abilityless faces cannot lose decision context.
 - Human blocking options use readiness and pairwise evasion checks; complete assignments remain engine-validated so partial menace/lure groups cannot hide candidates.
 - Publish only resulting kept-card counts and free-mulligan usage for opponent redraws, never private hand analysis or bottomed names.
+- Describe all zone transitions through the pure ZoneMovement formatter; hidden-to-hidden moves stay anonymous and draw bundling remains intact.

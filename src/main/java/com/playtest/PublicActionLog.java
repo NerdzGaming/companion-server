@@ -17,7 +17,6 @@ public final class PublicActionLog {
     private long sequence;
     PublicActionLog(Game game) { this.game = game; }
     static String name(CardView c) { return c == null || c.isFaceDown() ? "Face-down card" : c.getName(); }
-    private static boolean visible(ZoneType z) { return z == ZoneType.Battlefield || z == ZoneType.Graveyard || z == ZoneType.Exile || z == ZoneType.Command || z == ZoneType.Stack; }
     /** Library→hand moves are classified once Forge marks draws (it sets the flag just after the move). */
     private final List<Object[]> pendingLibraryHand = new ArrayList<>();
     private void flushPending() {
@@ -90,22 +89,7 @@ public final class PublicActionLog {
             MatchWorker.emit(MatchWorker.snapshot(game));
             return;
         }
-        if (!visible(from) && !visible(to)) return;
-        // Casting and resolving already have their own lines.
-        if (to == ZoneType.Stack || from == ZoneType.Stack && to == ZoneType.Graveyard) return;
-        forge.game.card.Card real = game.findByView(e.card());
-        if (from == ZoneType.Hand && to == ZoneType.Battlefield && real != null && real.isLand()) return; // "plays" line covers it
         String owner = e.to() != null && e.to().player() != null ? e.to().player().getName() : e.from() != null && e.from().player() != null ? e.from().player().getName() : "A player";
-        // Mask a card entering a hidden zone even if its previous identity was public.
-        String card = visible(to) || visible(from) ? name(e.card()) : "A card";
-        String text;
-        if (to == ZoneType.Battlefield) text = card + " enters the battlefield" + (from == null ? "" : from == ZoneType.Graveyard ? " from the graveyard" : from == ZoneType.Exile ? " from exile" : from == ZoneType.Library ? " from the library" : "") + ".";
-        else if (to == ZoneType.Graveyard) text = from == ZoneType.Battlefield ? card + " goes to the graveyard." : from == ZoneType.Hand ? owner + " discards " + card + "." : from == ZoneType.Library ? card + " is milled." : card + " goes to the graveyard.";
-        else if (to == ZoneType.Exile) text = card + " is exiled" + (from == ZoneType.Battlefield ? "" : from == ZoneType.Graveyard ? " from the graveyard" : from == ZoneType.Hand ? " from hand" : from == ZoneType.Library ? " from the library" : "") + ".";
-        else if (to == ZoneType.Hand) text = card + " returns to " + owner + "'s hand.";
-        else if (to == ZoneType.Library) text = card + " is put into " + owner + "'s library.";
-        else if (to == ZoneType.Command) text = card + " goes to the command zone.";
-        else text = card + " leaves the game.";
-        add("move", text);
+        add("move", ZoneMovement.describe(owner, name(e.card()), from == null ? null : from.name(), to == null ? null : to.name()));
     }
 }

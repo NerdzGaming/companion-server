@@ -18,5 +18,6 @@ public final class PolicyTestSuite {
         StrategyWeightsTest.main(args);
         ThreatAssessmentTest.main(args);
         TransportAccessTest.main(args);
+        ZoneMovementTest.main(args);
     }
 }

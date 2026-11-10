@@ -1,4 +1,9 @@
-# Companion Server v0.54.4
+# Companion Server v0.54.5
+
+## v0.54.5: complete public zone movement logs
+- Every zone transition is recorded, including hand/library transfers, casts to the stack, spell resolution to the graveyard and land plays. Draws retain the existing bundled draw log. Moves between hidden zones use anonymous card descriptions; face-down identities remain hidden.
+- All explicit public reveals remain recorded and retained in snapshot history. The matching website avoids duplicate notices for cards already displayed in the human selection window; unrelated and opponent reveal notices remain visible.
+- Messaging Logs can be dragged across the whole playtest area, including the hand dock and Tools sidebar, without changing engine state. Deploy this companion to Render and publish the website; full engine compilation and live-match verification remain deployment checks.
 
 ## v0.54.4: blocker selection and public mulligan notices
 - Human blocker choices use creature readiness and pairwise evasion legality, not partial combat-group validation; summoning sickness does not prevent blocking. Forge retains final validation of complete blocks, including menace, lure and maximum-blocker restrictions.
