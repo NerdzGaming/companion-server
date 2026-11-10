@@ -1018,7 +1018,11 @@ public final class HumanBridgeController extends PlayerControllerAi {
             JsonNode a = ask("NUMBER", body);
             if (a == null) return super.announceRequirements(ability, min, cap, announce);
             JsonNode value = a.path("value");
-            if (value.isIntegralNumber() && value.canConvertToInt() && value.asInt() >= min && value.asInt() <= cap) return value.asInt();
+            if (value.isIntegralNumber() && value.canConvertToInt() && value.asInt() >= min && value.asInt() <= cap) {
+                if (MatchWorker.actionLog != null && "X".equalsIgnoreCase(announce))
+                    MatchWorker.actionLog.choice(getPlayer().getName() + " announces X = " + value.asInt() + (ability.getHostCard() == null ? "" : " for " + ability.getHostCard().getName()) + ".");
+                return value.asInt();
+            }
             MatchWorker.emit(Map.of("type", "NOTICE", "message", "Choose a number within the offered range."));
         }
     }
@@ -1469,6 +1473,22 @@ public final class HumanBridgeController extends PlayerControllerAi {
         String prior = sa.getParam("AIPhyrexianPayment");
         sa.putParam("AIPhyrexianPayment", "Never");
         try {
+            // v0.56: manual mode spends the exact floating colours the player picked before any auto-fill.
+            if (!answer.path("auto").asBoolean(false) && answer.path("pool").isObject()) {
+                var picks = answer.path("pool").fields();
+                while (picks.hasNext() && !being.isPaid()) {
+                    var pick = picks.next();
+                    byte color = switch (pick.getKey()) {
+                        case "W" -> MagicColor.WHITE; case "U" -> MagicColor.BLUE; case "B" -> MagicColor.BLACK;
+                        case "R" -> MagicColor.RED; case "G" -> MagicColor.GREEN; case "C" -> (byte) forge.card.mana.ManaAtom.COLORLESS;
+                        default -> 0;
+                    };
+                    if (color == 0) continue;
+                    int n = Math.min(pick.getValue().asInt(0), me.getManaPool().getAmountOfColor(color));
+                    for (int i = 0; i < n && !being.isPaid(); i++)
+                        if (!me.getManaPool().tryPayCostWithColor(color, sa, being, sa.getPayingMana())) break;
+                }
+            }
             boolean paid = being.isPaid() || payAvoidingTargets(being, sa, me, effect);
             if (!paid) return false;
             if (life > 0) {

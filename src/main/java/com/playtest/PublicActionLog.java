@@ -68,7 +68,15 @@ public final class PublicActionLog {
     @Subscribe public void land(GameEventLandPlayed e) { add("state", e.player().getName() + " plays " + name(e.land()) + "."); }
     @Subscribe public void cast(GameEventSpellAbilityCast e) {
         // Do not include targetDescription or arbitrary stack text: either may contain hidden identities.
-        add("spell", e.si().getActivatingPlayer().getName() + (e.sa().isSpell() ? " casts " : e.si().isTrigger() ? " triggers " : " activates ") + name(e.sa().getHostCard()) + ".");
+        add("spell", e.si().getActivatingPlayer().getName() + (e.sa().isSpell() ? " casts " : e.si().isTrigger() ? " triggers " : " activates ") + name(e.sa().getHostCard()) + xSuffix(e.sa()) + ".");
+    }
+    /** X is announced publicly (CR 601.2b) for both seats, so every cast/activation shows it. */
+    static String xSuffix(forge.game.spellability.SpellAbility sa) {
+        try {
+            Integer x = sa.getXManaCostPaid();
+            boolean hasX = x != null || (sa.getPayCosts() != null && sa.getPayCosts().hasXInAnyCostPart());
+            return hasX ? " (X = " + (x == null ? 0 : x) + ")" : "";
+        } catch (RuntimeException ignored) { return ""; }
     }
     @Subscribe public void resolve(GameEventSpellResolved e) { add("spell", name(e.spell().getHostCard()) + (e.hasFizzled() ? " fizzles." : " resolves.")); }
     @Subscribe public void tap(GameEventCardTapped e) { if (e.card().getZone() == ZoneType.Battlefield) add("state", (e.tapped() ? "Taps " : "Untaps ") + name(e.card()) + "."); }
