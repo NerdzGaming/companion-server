@@ -63,8 +63,18 @@ public final class MatchWorker {
             .setPlayer(websiteSeat());
         RegisteredPlayer pb = (type == GameType.Commander ? RegisteredPlayer.forCommander(b) : new RegisteredPlayer(b))
             .setPlayer(opponentSeat(b, strategy));
-        if (startingLife > 0) { pa.setStartingLife(startingLife); pb.setStartingLife(startingLife); }
-        Match match = new Match(rules, List.of(pa, pb), "Nerdz rules match");
+        List<RegisteredPlayer> seats = new ArrayList<>(List.of(pa, pb));
+        // v0.58: args[6..7] are extra AI seats ("opponent2", "opponent3") using stock Forge AI.
+        for (int i = 6; i < Math.min(args.length, 8); i++) {
+            Deck x = DeckSerializer.fromFile(Path.of(args[i]).toFile());
+            if (x == null) { emit(Map.of("type", "ERROR", "message", "Deck could not be read")); System.exit(1); }
+            String seat = "opponent" + (i - 4);
+            RegisteredPlayer rp = (type == GameType.Commander ? RegisteredPlayer.forCommander(x) : new RegisteredPlayer(x))
+                .setPlayer(GamePlayerUtil.createAiPlayer(seat, 1, ""));
+            seats.add(rp);
+        }
+        if (startingLife > 0) for (RegisteredPlayer rp : seats) rp.setStartingLife(startingLife);
+        Match match = new Match(rules, seats, "Nerdz rules match");
         Game game = match.createGame();
         game.setNoGUIUser();
         if (args.length > 3) {
@@ -93,6 +103,14 @@ public final class MatchWorker {
     /** Preserve Forge's normal AI profile and decision engine, overriding only opponent mulligans. */
     /** v0.46: per-format starting life (0 = engine default) and free London mulligans. */
     static int startingLife = 0, freeMulligans = 0;
+    static final int nameOffset = java.util.Arrays.asList("Spike", "Timmy", "Johnny").indexOf(opponentDisplayName);
+
+    /** Distinct persona per AI seat; engine keys stay player/opponent/opponent2/opponent3. */
+    static String displayName(String seat) {
+        if (seat.equals("opponent")) return opponentDisplayName;
+        if (seat.startsWith("opponent")) { try { return MatchNames.aiName(nameOffset + Integer.parseInt(seat.substring(8)) - 1); } catch (NumberFormatException ignored) { } }
+        return seat;
+    }
 
     static LobbyPlayerAi opponentSeat(Deck deck, OpponentStrategy strategy) {
         LobbyPlayerAi baseline = (LobbyPlayerAi) GamePlayerUtil.createAiPlayer("opponent", 1, "");
@@ -132,9 +150,10 @@ public final class MatchWorker {
         s.put("activePlayer", ph.getPlayerTurn() == null ? null : ph.getPlayerTurn().getName());
         List<Player> players = new ArrayList<>(game.getPlayers());
         Player viewer = players.stream().filter(p -> p.getController() instanceof HumanBridgeController).findFirst().orElse(null);
+        s.put("seats", players.stream().map(Player::getName).toList());
         for (Player p : players) {
             Map<String, Object> side = new LinkedHashMap<>();
-            side.put("name", p == viewer ? "You" : opponentDisplayName);
+            side.put("name", p == viewer ? "You" : displayName(p.getName()));
             side.put("life", p.getLife());
             side.put("manaPool", manaPool(p));
             side.put("handCount", p.getCardsIn(ZoneType.Hand).size());

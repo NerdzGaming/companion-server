@@ -27,7 +27,7 @@ public final class App {
     static final int MAX_MATCHES = Integer.parseInt(System.getenv().getOrDefault("MAX_MATCHES", "2"));
 
     static final class MatchSession {
-        final String id; final String socketToken; volatile long tokenExpires; final String playerDeck; final String aiDeck; final String format; String strategy = "{}"; int startingLife = 0; int freeMulligans = 0;
+        final String id; final String socketToken; volatile long tokenExpires; final String playerDeck; final String aiDeck; final String format; List<String> extraDecks = List.of(); String strategy = "{}"; int startingLife = 0; int freeMulligans = 0;
         final Set<WsContext> sockets = ConcurrentHashMap.newKeySet();
         volatile Process worker; volatile long emptySince; volatile String lastState; volatile String lastPrompt; volatile long lastSeen = System.currentTimeMillis(); final long created = System.currentTimeMillis();
         MatchSession(String id, String p, String a, String f) { this.id = id; socketToken = TransportAccess.newToken(); tokenExpires = System.currentTimeMillis() + 5 * 60_000; playerDeck = p; aiDeck = a; format = f; }
@@ -51,8 +51,16 @@ public final class App {
                     || !List.of("Commander", "Constructed").contains(format)) {
                 ctx.status(400).json(Map.of("error", "Send playerDeckDck and aiDeckDck (.dck text)")); return;
             }
+            // v0.58: up to two extra AI seats for 3- and 4-player pods (stock Forge AI).
+            List<String> extra = new java.util.ArrayList<>();
+            for (JsonNode d : body.path("extraAiDecksDck")) {
+                String t = d.asText("");
+                if (t.isBlank() || t.length() > MAX_DECK || extra.size() >= 2) { ctx.status(400).json(Map.of("error", "Send at most two extra AI decks")); return; }
+                extra.add(t);
+            }
             String id = UUID.randomUUID().toString();
             MatchSession m = new MatchSession(id, p, a, format);
+            m.extraDecks = List.copyOf(extra);
             String strategy = JSON.writeValueAsString(body.path("strategy"));
             if (strategy.length() > 1_000_000) { ctx.status(400).json(Map.of("error", "Strategy payload too large")); return; }
             m.strategy = strategy;
@@ -174,11 +182,14 @@ public final class App {
             Path a = job.resolve("player.dck"), b = job.resolve("ai.dck");
             Files.writeString(a, m.playerDeck); Files.writeString(b, m.aiDeck);
             Path strategy = job.resolve("strategy.json"); Files.writeString(strategy, m.strategy);
+            List<String> extraPaths = new java.util.ArrayList<>();
+            for (int i = 0; i < m.extraDecks.size(); i++) { Path x = job.resolve("ai" + (i + 2) + ".dck"); Files.writeString(x, m.extraDecks.get(i)); extraPaths.add(x.toString()); }
             String workerCp = System.getenv().getOrDefault("WORKER_CP", "/app/server.jar:/app/forge/forge-headless.jar:/app/lib/*");
-            List<String> cmd = List.of(Path.of(System.getProperty("java.home"), "bin", "java").toString(),
+            List<String> cmd = new java.util.ArrayList<>(List.of(Path.of(System.getProperty("java.home"), "bin", "java").toString(),
                 "-Xmx" + System.getenv().getOrDefault("WORKER_HEAP", "900m"), "-Djava.awt.headless=true", "-Duser.home=" + job,
                 "--add-opens=java.base/java.lang=ALL-UNNAMED", "--add-opens=java.base/java.util=ALL-UNNAMED",
-                "-cp", workerCp, MatchWorker.class.getName(), a.toString(), b.toString(), m.format, strategy.toString(), String.valueOf(m.startingLife), String.valueOf(m.freeMulligans));
+                "-cp", workerCp, MatchWorker.class.getName(), a.toString(), b.toString(), m.format, strategy.toString(), String.valueOf(m.startingLife), String.valueOf(m.freeMulligans)));
+            cmd.addAll(extraPaths);
             m.worker = new ProcessBuilder(cmd).redirectError(ProcessBuilder.Redirect.INHERIT).start();
             broadcast(m, "{\"type\":\"STATUS\",\"message\":\"Forge is loading cards (about 30-60s)\"}");
             Thread relay = new Thread(() -> {

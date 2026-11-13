@@ -16,3 +16,4 @@
 - Publish only resulting kept-card counts and free-mulligan usage for opponent redraws, never private hand analysis or bottomed names.
 - Describe all zone transitions through the pure ZoneMovement formatter; hidden-to-hidden moves stay anonymous and draw bundling remains intact.
 - Replay loops only through exact remapped engine choices in each isolated worker; preserve queued human answers and stop for opponent responses or changed decisions.
+- Extra AI seats (opponent2/opponent3) use stock Forge AI; OpponentStrategy stays bound to the primary "opponent" seat so pod size cannot change its inputs.
