@@ -189,12 +189,19 @@ public final class HumanBridgeController extends PlayerControllerAi {
         undo.checkpoint(me.getGame(), me);
         while (true) {
             List<SpellAbility> playable = new ArrayList<>();
-            List<Card> candidates = new ArrayList<>();
-            for (ZoneType z : ZONES) candidates.addAll(new ArrayList<>(me.getCardsIn(z)));
+            Map<Integer, Card> candidates = new LinkedHashMap<>();
+            for (ZoneType z : ZONES) for (Card c : new ArrayList<>(me.getCardsIn(z))) candidates.put(c.getId(), c);
+            // Theft permissions apply to cards in any owner's exile, not just our own.
+            // Only enumerate public exile; ability generation and canPlay enforce the viewer's grant.
+            for (Player seat : me.getGame().getPlayers()) {
+                for (Card c : new ArrayList<>(seat.getCardsIn(ZoneType.Exile))) {
+                    if (!c.isFaceDown()) candidates.put(c.getId(), c);
+                }
+            }
             // Never enumerate the hidden library. Visibility is not play permission: canPlay still decides.
             Card top = MatchWorker.visibleLibraryTop(me, me);
-            if (top != null) candidates.add(top);
-            for (Card c : candidates) {
+            if (top != null) candidates.put(top.getId(), top);
+            for (Card c : candidates.values()) {
                     try {
                         for (SpellAbility base : c.getAllPossibleAbilities(me, true)) {
                             base.setActivatingPlayer(me);

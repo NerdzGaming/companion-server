@@ -1,4 +1,9 @@
-# Companion Server v0.57
+# Companion Server v0.58.2
+
+## v0.58.2: all-player exile casting
+- Human priority considers face-up cards in every player's exile, including Ragavan/theft cards owned by extra seats. Card IDs are deduplicated; engine play grants, timing, targets and payment remain authoritative. No opponent hands or libraries are scanned.
+- The matching website shows eligible exile cards from every seat with the owner's display name; Messaging card previews render outside scrolling windows and follow native fullscreen.
+- Deploy this package to Render and start a new match. Full pinned-engine compilation and live Ragavan verification remain deployment checks.
 
 ## v0.57: cast-log build fix and guarded loop recording
 - Resolve the full spell ability by the cast event's stack-instance ID before reading X; the event itself supplies view objects, not SpellAbility.
