@@ -538,7 +538,7 @@ public final class HumanBridgeController extends PlayerControllerAi {
             m.put("kind", "other"); m.put("zone", "Stack");
             m.put("label", MatchWorker.visibleName(ability.getHostCard()) + " — " + (ability.getHostCard().isFaceDown() ? "Face-down spell" : ability.toUnsuppressedString()));
         } else if (o instanceof Player p) {
-            m.put("kind", "player"); m.put("label", p == getPlayer() ? "You" : p.getName());
+            m.put("kind", "player"); m.put("label", p == getPlayer() ? "You" : MatchWorker.displayName(p.getName()));
         } else {
             m.put("kind", "other"); m.put("label", String.valueOf(o));
         }
